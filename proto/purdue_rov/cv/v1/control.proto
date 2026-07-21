@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+import "google/protobuf/struct.proto";
+
+message CommandRequest {
+  bytes command_id = 1;
+  string target_id = 2;
+  int64 issued_time_unix_ns = 3;
+  uint32 requested_timeout_ms = 4;
+
+  oneof command {
+    GetStatus get_status = 10;
+    Start start = 11;
+    Stop stop = 12;
+    SetMode set_mode = 13;
+    SetDynamicConfig set_dynamic_config = 14;
+    RequestDebugSnapshot request_debug_snapshot = 15;
+    StartRecording start_recording = 16;
+    StopRecording stop_recording = 17;
+    Reset reset = 18;
+    GetCommandStatus get_command_status = 19;
+  }
+}
+
+message GetStatus {}
+
+message Start {}
+
+message Stop {
+  bool graceful = 1;
+}
+
+message SetMode {
+  string mode = 1;
+}
+
+message SetDynamicConfig {
+  google.protobuf.Struct fields = 1;
+}
+
+message RequestDebugSnapshot {}
+
+message StartRecording {
+  string session_label = 1;
+}
+
+message StopRecording {}
+
+message Reset {}
+
+message GetCommandStatus {
+  bytes target_command_id = 1;
+}
+
+message CommandResponse {
+  bytes command_id = 1;
+  string target_id = 2;
+  CommandStatus status = 3;
+  string error_code = 4;
+  string message = 5;
+  string resulting_state = 6;
+  int64 response_time_unix_ns = 7;
+}
+
+enum CommandStatus {
+  COMMAND_STATUS_UNSPECIFIED = 0;
+  COMMAND_STATUS_RECEIVED = 1;
+  COMMAND_STATUS_ACCEPTED = 2;
+  COMMAND_STATUS_COMPLETED = 3;
+  COMMAND_STATUS_REJECTED = 4;
+  COMMAND_STATUS_FAILED = 5;
+  COMMAND_STATUS_OUTCOME_UNKNOWN = 6;
+}

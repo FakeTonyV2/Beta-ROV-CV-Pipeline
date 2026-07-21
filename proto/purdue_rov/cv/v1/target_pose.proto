@@ -1,0 +1,26 @@
+syntax = "proto3";
+ 
+package purdue_rov.cv.v1;
+ 
+// Spec §21.2. Translation in meters, angles in radians.
+message TargetPoseResult {
+  string camera_id = 1;
+  bytes camera_session_id = 2;
+  uint64 frame_number = 3;
+  int64 capture_time_unix_ns = 4;
+ 
+  string target_id = 5;
+  string coordinate_frame = 6;
+ 
+  double x_m = 7;
+  double y_m = 8;
+  double z_m = 9;
+ 
+  double roll_rad = 10;
+  double pitch_rad = 11;
+  double yaw_rad = 12;
+ 
+  float confidence = 13;
+  // Empty, or exactly 36 values in row-major 6x6 order (§21.2).
+  repeated double covariance = 14;
+}

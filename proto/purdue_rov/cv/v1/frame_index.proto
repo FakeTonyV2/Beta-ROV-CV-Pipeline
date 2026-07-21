@@ -1,0 +1,14 @@
+syntax = "proto3";
+package purdue_rov.cv.v1;
+
+message FrameIndex {
+  string camera_id = 1;
+  bytes camera_session_id = 2;
+  uint64 frame_number = 3;
+  int64 capture_time_unix_ns = 4;
+  int64 capture_monotonic_ns = 5;
+  uint32 rtp_timestamp = 6;
+  uint32 rtp_ssrc = 7;
+  uint32 rtp_payload_type = 8;
+}
+

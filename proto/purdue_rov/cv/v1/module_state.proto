@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+// This file is named module_state.proto only because that's the payload registry key (§16.5); the message
+// and enum themselves are shared across component types, not
+// module-specific.
+message ModuleState {
+  string source_id = 1;
+  bytes publisher_session_id = 2;
+
+  ComponentState state = 3;
+  ComponentState previous_state = 4;   // UNSPECIFIED on first transition
+
+  int64 state_changed_time_unix_ns = 5;
+
+  string error_code = 6;    // empty when not applicable
+  string message = 7;       // empty when not applicable
+}
+
+enum ComponentState {
+  COMPONENT_STATE_UNSPECIFIED = 0;
+  STARTING = 1;
+  READY = 2;
+  RUNNING = 3;
+  DEGRADED = 4;
+  ERROR = 5;
+  STOPPING = 6;
+  STOPPED = 7;
+}

@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+// MessageEnvelope is the outer wrapper for every ZeroMQ data-plane
+// publication (spec §16, §17.3). Every publication carries exactly two
+// frames: the UTF-8 topic, then this envelope, serialized.
+message MessageEnvelope {
+  MessageType message_type = 1;
+
+  string payload_type = 2;
+  string task_id = 3;
+  string source_id = 4;
+
+  optional string camera_id = 5;
+  optional bytes camera_session_id = 6;
+  optional uint64 frame_number = 7;
+  optional int64 capture_time_unix_ns = 8;
+
+  int64 publish_time_unix_ns = 9;
+  int64 source_monotonic_ns = 10;
+
+  bytes publisher_session_id = 11;   // exactly 16 bytes
+  uint64 sequence_number = 12;
+  uint32 schema_version = 13;        // = 1 for v1 (§16.2)
+
+  string payload_encoding = 14;      // "protobuf" for all v1 payload types
+  uint32 payload_size_bytes = 15;
+  bytes payload = 16;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  CV_RESULT = 1;
+  DIAGNOSTIC = 2;
+  MODULE_STATE = 3;
+  FRAME_INDEX = 4;
+  DEBUG_SNAPSHOT = 5;
+  CLOCK_STATUS = 6;
+  EVENT = 7;
+}

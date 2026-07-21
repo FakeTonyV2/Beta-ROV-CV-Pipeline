@@ -1,0 +1,80 @@
+schema_version: 1
+
+device:
+  device_id: rov_pi5
+  execution_target: rov_pi5
+
+network:
+  tether_interface: eth0
+  rov_ip: 192.168.50.2
+  surface_ip: 192.168.50.1
+
+clock:
+  server_ip: 192.168.50.1
+  maximum_offset_ms: 10
+  check_interval_seconds: 5
+  invalid_after_failures: 3
+
+messaging:
+  broker:
+    publisher_endpoint: tcp://192.168.50.2:5555
+    subscriber_endpoint: tcp://192.168.50.2:5556
+  control:
+    client_endpoint: tcp://192.168.50.2:5560
+    module_endpoint: ipc:///run/purdue-rov-cv/module-control.sock
+  max_message_bytes: 4194304
+  result_send_hwm: 5
+  result_receive_hwm: 5
+
+diagnostics:
+  publish_interval_ms: 1000
+  log_level: INFO
+
+debug_snapshots:
+  enabled: true
+  maximum_rate_hz: 1.0
+  maximum_width: 640
+  maximum_height: 360
+  jpeg_quality: 70
+
+recording:
+  enabled: true
+  directory: /var/lib/purdue-rov-cv/recordings
+  video_segment_seconds: 300
+  minimum_free_space_gib: 10
+  structured:
+    chunk_size_bytes: 1048576
+    compression: zstd
+
+cameras:
+  front_camera:
+    adapter: v4l2
+    device_path: /dev/v4l/by-id/<stable-id>
+    device_path_kind: by_id
+    format: h264
+    width: 1920
+    height: 1080
+    frame_rate: 30
+    stream_index: 0
+    stream_to_surface: true
+    cv_enabled: true
+    allow_software_encode: false
+    slot_capacity_bytes: 6220800
+
+tasks:
+  gate_detection:
+    module_class: purdue_rov_cv.modules.gate.GateDetector
+    enabled: true
+    input_camera: front_camera
+    execution_target: rov_pi5
+    max_input_fps: 15
+    processing_deadline_ms: 100
+    publish_topic: cv.result.gate_detection.front_camera
+    payload_type: bounding_boxes_v1
+    dynamic:
+      confidence_threshold: 0.60
+    artifact:
+      format: onnx
+      path: /opt/purdue-rov-cv/models/gate_detector.onnx
+      sha256: <64-lowercase-hex-characters>
+      runtime: onnxruntime

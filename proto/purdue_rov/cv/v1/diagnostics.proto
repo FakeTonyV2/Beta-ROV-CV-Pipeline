@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+import "purdue_rov/cv/v1/module_state.proto";
+
+// Directly from the metric lists in §25.2-§25.7. Grouped into
+// sub-messages by component category; a given publisher only
+// populates the group(s) that apply to it (e.g. a camera service sets
+// `camera`, not `module`). Message-typed fields already have implicit
+// presence in proto3, so no `optional` keyword is needed on them.
+message DiagnosticStatus {
+  string source_id = 1;
+  int64 report_time_unix_ns = 2;
+
+  float process_cpu_percent = 3;
+  uint64 resident_memory_bytes = 4;
+  uint32 thread_count = 5;
+  double uptime_seconds = 6;
+  ComponentState state = 7;
+  optional string last_error_code = 8;
+  optional string last_error_message = 9;
+
+  // Component-specific groups populate only the one(s) that apply.
+  CameraMetrics camera = 10;
+  ModuleMetrics module = 11;
+  MessagingMetrics messaging = 12;
+  VideoMetrics video = 13;
+  SystemMetrics system = 14;
+}
+
+message CameraMetrics {
+  uint64 frames_received = 1;
+  float frames_per_second = 2;
+  uint64 frame_timeouts = 3;
+  uint64 pipeline_restarts = 4;
+  uint64 shared_memory_write_count = 5;
+  uint32 current_width = 6;
+  uint32 current_height = 7;
+  string current_pixel_format = 8;
+  bool usb_device_present = 9;
+}
+
+message ModuleMetrics {
+  uint64 frames_read = 1;
+  uint64 frames_processed = 2;
+  uint64 frames_dropped_before_processing = 3;
+  uint64 processing_exceptions = 4;
+  uint64 processing_deadline_misses = 5;
+  float average_processing_ms = 6;
+  float p95_processing_ms = 7;
+  uint64 results_published = 8;
+  uint64 results_dropped_local_queue = 9;
+  uint64 zmq_send_dropped = 10;
+}
+
+message MessagingMetrics {
+  uint64 messages_sent = 1;
+  uint64 messages_received = 2;
+  uint64 invalid_messages = 3;
+  uint64 unknown_payload_types = 4;
+  uint64 observed_sequence_gaps = 5;
+  uint64 reconnect_count = 6;
+}
+
+message VideoMetrics {
+  uint64 rtp_packets_received = 1;
+  uint64 rtp_packets_lost = 2;
+  uint64 decoded_frames = 3;
+  uint64 frame_index_hits = 4;
+  uint64 frame_index_misses = 5;
+  uint64 stream_restarts = 6;
+  uint64 last_frame_age_ms = 7;
+}
+
+
+message SystemMetrics {
+  float cpu_temperature_c = 1;
+  uint64 memory_available_bytes = 2;
+  uint64 disk_free_bytes = 3;
+  bool clock_synchronized = 4;
+  float clock_offset_ms = 5;
+  bool tether_link_up = 6;
+}

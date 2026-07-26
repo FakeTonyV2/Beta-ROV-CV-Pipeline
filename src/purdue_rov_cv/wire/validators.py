@@ -155,10 +155,10 @@ def _validate_common_camera_payload(payload: Message, envelope: envelope_pb2.Mes
         ("frame_number", payload.frame_number),
         ("capture_time_unix_ns", payload.capture_time_unix_ns),
     ):
-        if not envelope.HasField(field):
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"{field_info} is required for camera payloads", field))
-        elif getattr(envelope, field) != payload_value:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"payload and envelope {field_info} differ", field))
+        if not envelope.HasField(field_info):
+            errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"{field_info} is required for camera payloads", field_info))
+        elif getattr(envelope, field_info) != payload_value:
+            errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"payload and envelope {field_info} differ", field_info))
     return errors
 
 

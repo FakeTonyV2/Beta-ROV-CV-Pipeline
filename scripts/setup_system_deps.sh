@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$(uname -m)" != "aarch64" && "${ALLOW_NON_REFERENCE_PLATFORM:-0}" != "1" ]]; then
+    echo "error: reference Pi platform requires aarch64 (set ALLOW_NON_REFERENCE_PLATFORM=1 for development)" >&2
+    exit 1
+fi
+if [[ ! -r /etc/os-release ]] || ! grep -qE '^ID=ubuntu$' /etc/os-release || ! grep -qE '^VERSION_ID="24.04"$' /etc/os-release; then
+    echo "error: reference platform requires Ubuntu 24.04 (set ALLOW_NON_REFERENCE_PLATFORM=1 for development)" >&2
+    exit 1
+fi
+
 echo "=== Installing System & GStreamer Dependencies ==="
 
 # Update package lists

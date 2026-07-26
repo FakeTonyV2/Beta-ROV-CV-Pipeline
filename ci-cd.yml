@@ -1,0 +1,2 @@
+# GitHub Actions entry point: .github/workflows/ci.yml
+# Kept as a project-level pointer for tooling that expects ci-cd.yml.

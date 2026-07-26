@@ -24,6 +24,22 @@ import smoke test are part of CI. Protobuf generation is pinned by `.protoc-vers
 ./scripts/generate_proto.sh
 ```
 
+## Linting with Ruff
+
+Run the linter from the repository root after activating the virtual environment:
+
+```bash
+.venv/bin/python -m ruff check src tests
+```
+
+Ruff can apply safe automatic fixes with:
+
+```bash
+.venv/bin/python -m ruff check --fix src tests
+```
+
+Review the resulting diff, then rerun the first command to confirm the tree is clean.
+
 Before a mission, run the Pi preflight with the deployed camera paths, for example:
 
 ```bash

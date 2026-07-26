@@ -1,0 +1,36 @@
+target-version = "py312"
+
+line-length = 120
+
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pypackages__",
+    "build",
+    "dist",
+]
+
+[lint]
+# Rules to enable
+# E/W = pycodestyle, F = Pyflakes, I = isort, B = flake8-bugbear, A = flake8-builtins
+select = ["E", "W", "F", "I", "B", "A"]
+
+# Specific rules to ignore (e.g., E501 = line too long)
+ignore = ["E501"]
+
+# Allow fixing behaviors automatically via `ruff check --fix`
+fixable = ["ALL"]
+unfixable = []
+
+# Custom rules for specific files 
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+

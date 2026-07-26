@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+// Payload for system.event.<event_type> publications.
+message SystemEvent {
+  string event_type = 1;
+  string source_id = 2;
+  int64 event_time_unix_ns = 3;
+  optional string error_code = 4;
+  string message = 5;
+}

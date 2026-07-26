@@ -40,6 +40,8 @@ pytest==9.1.1
     #   pytest-timeout
 pytest-timeout==2.4.0
     # via -r requirements.in
+ruff==0.16.0
+    # via -r requirements.in
 pyyaml==6.0.3
     # via -r requirements.in
 pyzmq==27.1.0

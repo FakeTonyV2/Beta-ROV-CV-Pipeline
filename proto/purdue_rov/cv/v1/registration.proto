@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+import "purdue_rov/cv/v1/module_state.proto";
+
+// Control-plane registration sent by a module when it starts.
+message ModuleRegistration {
+  string module_id = 1;
+  string task_id = 2;
+  bytes module_session_id = 3;
+  repeated string supported_command_types = 4;
+  ComponentState current_state = 5;
+  uint32 process_id = 6;
+  string host_device_id = 7;
+}
+
+// Router reply to a ModuleRegistration. The request uses the DEALER identity
+// and module_session_id for correlation, so no command UUID is introduced.
+message ModuleRegistrationResponse {
+  bool accepted = 1;
+  string error_code = 2;
+  string message = 3;
+}

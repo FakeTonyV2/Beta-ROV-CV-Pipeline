@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package purdue_rov.cv.v1;
+
+// Payload for system.clock.<device_id> publications.
+message ClockStatus {
+  string device_id = 1;
+  int64 report_time_unix_ns = 2;
+  bool synchronized = 3;
+  double offset_ms = 4;
+}

@@ -6,7 +6,6 @@ from pydantic import ValidationError
 
 from purdue_rov_cv.config import AppConfig, load_config
 
-
 CONFIG_PATH = Path(__file__).parents[2] / "config" / "mission.yaml"
 
 

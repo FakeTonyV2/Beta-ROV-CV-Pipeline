@@ -1,16 +1,20 @@
 """Round-trip coverage for every protobuf message in the CV schema."""
 
 from google.protobuf.descriptor import FieldDescriptor
-
-from purdue_rov.cv.v1 import bounding_box_pb2
-from purdue_rov.cv.v1 import classification_pb2
-from purdue_rov.cv.v1 import control_pb2
-from purdue_rov.cv.v1 import debug_snapshot_pb2
-from purdue_rov.cv.v1 import diagnostics_pb2
-from purdue_rov.cv.v1 import envelope_pb2
-from purdue_rov.cv.v1 import frame_index_pb2
-from purdue_rov.cv.v1 import module_state_pb2
-from purdue_rov.cv.v1 import target_pose_pb2
+from purdue_rov.cv.v1 import (
+    bounding_box_pb2,
+    classification_pb2,
+    clock_status_pb2,
+    control_pb2,
+    debug_snapshot_pb2,
+    diagnostics_pb2,
+    envelope_pb2,
+    event_pb2,
+    frame_index_pb2,
+    module_state_pb2,
+    registration_pb2,
+    target_pose_pb2,
+)
 
 
 def _sample_scalar(field: FieldDescriptor):
@@ -99,6 +103,10 @@ def test_class_score_round_trip():
     _assert_round_trip(classification_pb2.ClassScore)
 
 
+def test_clock_status_round_trip():
+    _assert_round_trip(clock_status_pb2.ClockStatus)
+
+
 def test_command_request_round_trip():
     _assert_round_trip(control_pb2.CommandRequest)
 
@@ -179,12 +187,24 @@ def test_message_envelope_round_trip():
     _assert_round_trip(envelope_pb2.MessageEnvelope)
 
 
+def test_system_event_round_trip():
+    _assert_round_trip(event_pb2.SystemEvent)
+
+
 def test_frame_index_round_trip():
     _assert_round_trip(frame_index_pb2.FrameIndex)
 
 
 def test_module_state_round_trip():
     _assert_round_trip(module_state_pb2.ModuleState)
+
+
+def test_module_registration_round_trip():
+    _assert_round_trip(registration_pb2.ModuleRegistration)
+
+
+def test_module_registration_response_round_trip():
+    _assert_round_trip(registration_pb2.ModuleRegistrationResponse)
 
 
 def test_target_pose_result_round_trip():

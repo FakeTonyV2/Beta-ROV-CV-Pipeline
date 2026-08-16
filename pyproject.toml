@@ -13,8 +13,11 @@ dependencies = [
   "pydantic>=2.0,<3.0", "PyYAML>=6.0,<7.0", "pyzmq>=26.0,<28.0",
 ]
 
+[project.scripts]
+rov-cv = "purdue_rov_cv.cli:main"
+
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "generated/python"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

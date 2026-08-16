@@ -8,6 +8,7 @@ python3.12 -m venv .venv
 echo "=== Upgrading Core Tooling ==="
 ./.venv/bin/python -m pip install --upgrade pip setuptools wheel
 ./.venv/bin/python -m pip install --requirement requirements.lock
+./.venv/bin/python -m pip install --editable .
 ./.venv/bin/python scripts/smoke_imports.py
 
 echo ""

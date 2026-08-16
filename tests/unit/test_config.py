@@ -14,7 +14,7 @@ def test_valid_config_loads():
 
     assert isinstance(config, AppConfig)
     assert config.schema_version == 1
-    assert config.cameras.front_camera.width == 1920
+    assert config.cameras["front_camera"].width == 1920
 
 
 def _config_data() -> dict:

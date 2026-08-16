@@ -1,55 +1,22 @@
 schema_version: 1
-
-device:
-  device_id: rov_pi5
-  execution_target: rov_pi5
-
-network:
-  tether_interface: eth0
-  rov_ip: 192.168.50.2
-  surface_ip: 192.168.50.1
-
-clock:
-  server_ip: 192.168.50.1
-  maximum_offset_ms: 10
-  check_interval_seconds: 5
-  invalid_after_failures: 3
-
+device: {device_id: rov_pi5, execution_target: rov_pi5}
+network: {tether_interface: eth0, rov_ip: 192.168.50.2, surface_ip: 192.168.50.1}
+clock: {server_ip: 192.168.50.1, maximum_offset_ms: 10, check_interval_seconds: 5, invalid_after_failures: 3}
 messaging:
-  broker:
-    publisher_endpoint: tcp://192.168.50.2:5555
-    subscriber_endpoint: tcp://192.168.50.2:5556
-  control:
-    client_endpoint: tcp://192.168.50.2:5560
-    module_endpoint: ipc:///run/purdue-rov-cv/module-control.sock
+  broker: {publisher_endpoint: tcp://192.168.50.2:5555, subscriber_endpoint: tcp://192.168.50.2:5556}
+  control: {client_endpoint: tcp://192.168.50.2:5560, module_endpoint: ipc:///run/purdue-rov-cv/module-control.sock}
   max_message_bytes: 4194304
   result_send_hwm: 5
   result_receive_hwm: 5
-
-diagnostics:
-  publish_interval_ms: 1000
-  log_level: INFO
-
-debug_snapshots:
-  enabled: true
-  maximum_rate_hz: 1.0
-  maximum_width: 640
-  maximum_height: 360
-  jpeg_quality: 70
-
+diagnostics: {publish_interval_ms: 1000, log_level: INFO}
+debug_snapshots: {enabled: true, maximum_rate_hz: 1.0, maximum_width: 640, maximum_height: 360, jpeg_quality: 70}
 recording:
-  enabled: true
+  enabled: false
   directory: /var/lib/purdue-rov-cv/recordings
   video_segment_seconds: 300
   minimum_free_space_gib: 10
-  structured:
-    chunk_size_bytes: 1048576
-    compression: zstd
-
-camera_limits:
-  maximum_configured: 16
-  maximum_active: 8
-
+  structured: {chunk_size_bytes: 1048576, compression: zstd}
+camera_limits: {maximum_configured: 16, maximum_active: 8}
 cameras:
   front_camera:
     adapter: v4l2
@@ -64,7 +31,6 @@ cameras:
     cv_enabled: true
     allow_software_encode: false
     slot_capacity_bytes: 6220800
-
 tasks:
   gate_detection:
     module_class: purdue_rov_cv.modules.gate.GateDetector
@@ -75,8 +41,7 @@ tasks:
     processing_deadline_ms: 100
     publish_topic: cv.result.gate_detection.front_camera
     payload_type: bounding_boxes_v1
-    dynamic:
-      confidence_threshold: 0.60
+    dynamic: {confidence_threshold: 0.6}
     artifact:
       format: onnx
       path: /opt/purdue-rov-cv/models/gate_detector.onnx

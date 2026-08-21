@@ -18,11 +18,18 @@ from purdue_rov_cv.config import (
     plan_dynamic_update,
     resolve_config_path,
 )
-from purdue_rov_cv.config.issues import ConfigSchemaError, ConfigStaticValidationError, ConfigYamlError
+from purdue_rov_cv.config.issues import (
+    ConfigFileError,
+    ConfigIssue,
+    ConfigSchemaError,
+    ConfigStaticValidationError,
+    ConfigYamlError,
+)
 from purdue_rov_cv.config.policy import ChangeClass, classify_field_path
 from purdue_rov_cv.config.ports import derive_stream_allocation
 from purdue_rov_cv.config.probes import CameraProbeResult, validate_hardware_config
 from purdue_rov_cv.config.transactions import TransactionPlanState
+from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.wire.errors import ErrorCode
 
 MISSION_PATH = Path(__file__).parents[2] / "config" / "mission.yaml"
@@ -310,23 +317,52 @@ def test_cli_exit_codes_and_hardware_probe_boundary(capsys, monkeypatch):
         def validate_port_availability(self, config):
             return ()
 
-    assert cli.main(["config", "validate", str(MISSION_PATH)]) == 0
+    assert cli.main(["config", "validate", str(MISSION_PATH)]) is ExitCode.CLEAN_SHUTDOWN
     assert "valid:" in capsys.readouterr().out
     monkeypatch.setattr(cli, "create_default_hardware_probe", PassingProbe)
-    assert cli.main(["config", "validate", str(MISSION_PATH), "--probe-hardware"]) == 0
+    assert cli.main(["config", "validate", str(MISSION_PATH), "--probe-hardware"]) is ExitCode.CLEAN_SHUTDOWN
     assert "hardware=ok" in capsys.readouterr().out
     monkeypatch.setattr(cli, "create_default_hardware_probe", FailingProbe)
-    assert cli.main(["config", "validate", str(MISSION_PATH), "--probe-hardware"]) == 4
+    assert cli.main(["config", "validate", str(MISSION_PATH), "--probe-hardware"]) is ExitCode.INVALID_CONFIGURATION
     assert "CAMERA_NOT_FOUND" in capsys.readouterr().err
     monkeypatch.setattr(
         cli,
         "create_default_hardware_probe",
         lambda: (_ for _ in ()).throw(cli.HardwareProbeUnavailable("test-only unavailable")),
     )
-    assert cli.main(["config", "validate", str(MISSION_PATH), "--probe-hardware"]) == 3
+    assert cli.main(["config", "validate", str(MISSION_PATH), "--probe-hardware"]) is ExitCode.INVALID_CONFIGURATION
     assert "HARDWARE_PROBE_UNAVAILABLE" in capsys.readouterr().err
-    assert cli.main(["config", "validate", "/missing/mission.yaml"]) == 2
+    assert cli.main(["config", "validate", "/missing/mission.yaml"]) is ExitCode.INVALID_CONFIGURATION
     assert "CONFIG_INVALID CONFIG_FILE_NOT_FOUND" in capsys.readouterr().err
+
+
+def test_cli_argument_internal_and_io_exit_contracts(capsys, monkeypatch):
+    with pytest.raises(SystemExit) as invalid_arguments:
+        cli.main(["not-a-command"])
+    assert invalid_arguments.value.code == ExitCode.INVALID_ARGUMENTS
+
+    def unreadable_config(path):
+        del path
+        raise ConfigFileError([ConfigIssue("CONFIG_FILE_READ_ERROR", "<file>", "unreadable")])
+
+    monkeypatch.setattr(cli, "load_config", unreadable_config)
+    assert cli.main(["config", "validate", "mission.yaml"]) is ExitCode.IO_FAILURE
+
+    monkeypatch.setattr(cli, "main", lambda argv=None: (_ for _ in ()).throw(RuntimeError("unexpected")))
+    assert cli.entrypoint([]) == ExitCode.INTERNAL_SOFTWARE_FAILURE
+    assert "INTERNAL_ERROR <cli>: RuntimeError: unexpected" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("interval", "valid"), [(499, False), (500, True), (5_000, True), (5_001, False)])
+def test_diagnostics_publish_interval_uses_runtime_contract_boundaries(interval, valid):
+    data = _data()
+    data["diagnostics"]["publish_interval_ms"] = interval
+
+    if valid:
+        assert parse_config_data(data).diagnostics.publish_interval_ms == interval
+    else:
+        with pytest.raises(ConfigSchemaError, match="publish_interval_ms"):
+            parse_config_data(data)
 
 
 def test_installed_cli_entry_point_validates_configuration():

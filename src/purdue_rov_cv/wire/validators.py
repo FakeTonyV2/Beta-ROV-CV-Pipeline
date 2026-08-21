@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from google.protobuf.message import DecodeError, Message
 from purdue_rov.cv.v1 import (
@@ -59,6 +60,13 @@ class ControlValidationResult:
         return not self.errors
 
 
+class CameraPayload(Protocol):
+    camera_id: str
+    camera_session_id: bytes
+    frame_number: int
+    capture_time_unix_ns: int
+
+
 @dataclass
 class SequenceTracker:
     """Track strictly increasing data-plane sequences within publisher sessions.
@@ -67,17 +75,21 @@ class SequenceTracker:
     a tracker is explicitly supplied.
     """
 
-    _last_by_session: dict[bytes, int] = field(default_factory=dict)
+    gap_observer: Callable[[int], None] | None = None
+    _last_by_session_and_source: dict[tuple[bytes, str], int] = field(default_factory=dict)
 
     def observe(self, envelope: envelope_pb2.MessageEnvelope) -> ValidationError | None:
-        last = self._last_by_session.get(envelope.publisher_session_id)
+        key = (bytes(envelope.publisher_session_id), envelope.source_id)
+        last = self._last_by_session_and_source.get(key)
         if last is not None and envelope.sequence_number <= last:
             return _error(
                 ErrorCode.INVALID_ENVELOPE,
                 "sequence_number must strictly increase within a publisher session",
                 "sequence_number",
             )
-        self._last_by_session[envelope.publisher_session_id] = envelope.sequence_number
+        if last is not None and envelope.sequence_number > last + 1 and self.gap_observer is not None:
+            self.gap_observer(envelope.sequence_number - last - 1)
+        self._last_by_session_and_source[key] = envelope.sequence_number
         return None
 
 
@@ -100,9 +112,7 @@ def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
     index = 2
     dimensions: tuple[int, int] | None = None
     saw_scan = False
-    sof_markers = frozenset(
-        {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
-    )
+    sof_markers = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
     while index < len(data):
         if data[index] != 0xFF:
             return None
@@ -141,14 +151,20 @@ def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
     return None
 
 
-def _validate_common_camera_payload(payload: Message, envelope: envelope_pb2.MessageEnvelope) -> list[ValidationError]:
+def _validate_common_camera_payload(
+    payload: CameraPayload, envelope: envelope_pb2.MessageEnvelope
+) -> list[ValidationError]:
     errors: list[ValidationError] = []
-    camera_id = getattr(payload, "camera_id")
-    camera_session_id = getattr(payload, "camera_session_id")
+    camera_id = payload.camera_id
+    camera_session_id = payload.camera_session_id
     if not camera_id:
         errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload camera_id is empty", "payload.camera_id"))
     if len(camera_session_id) != 16:
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload camera_session_id must be 16 bytes", "payload.camera_session_id"))
+        errors.append(
+            _error(
+                ErrorCode.INVALID_ENVELOPE, "payload camera_session_id must be 16 bytes", "payload.camera_session_id"
+            )
+        )
     for field_info, payload_value in (
         ("camera_id", camera_id),
         ("camera_session_id", camera_session_id),
@@ -156,7 +172,9 @@ def _validate_common_camera_payload(payload: Message, envelope: envelope_pb2.Mes
         ("capture_time_unix_ns", payload.capture_time_unix_ns),
     ):
         if not envelope.HasField(field_info):
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"{field_info} is required for camera payloads", field_info))
+            errors.append(
+                _error(ErrorCode.INVALID_ENVELOPE, f"{field_info} is required for camera payloads", field_info)
+            )
         elif getattr(envelope, field_info) != payload_value:
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"payload and envelope {field_info} differ", field_info))
     return errors
@@ -168,33 +186,53 @@ def _validate_payload(payload: Message, envelope: envelope_pb2.MessageEnvelope) 
         errors.extend(_validate_common_camera_payload(payload, envelope))
         for index, detection in enumerate(payload.detections):
             if not _finite_in_range(detection.confidence, 0.0, 1.0):
-                errors.append(_error(ErrorCode.INVALID_ENVELOPE, "confidence must be finite and in [0, 1]", f"detections[{index}].confidence"))
+                errors.append(
+                    _error(
+                        ErrorCode.INVALID_ENVELOPE,
+                        "confidence must be finite and in [0, 1]",
+                        f"detections[{index}].confidence",
+                    )
+                )
             for field in ("x", "y"):
                 if not _finite_in_range(getattr(detection, field), 0.0, 1.0):
-                    errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"{field} must be finite and in [0, 1]", f"detections[{index}].{field}"))
+                    errors.append(
+                        _error(
+                            ErrorCode.INVALID_ENVELOPE,
+                            f"{field} must be finite and in [0, 1]",
+                            f"detections[{index}].{field}",
+                        )
+                    )
             for field in ("width", "height"):
                 value = getattr(detection, field)
                 if not _finite_in_range(value, 0.0, 1.0) or value <= 0.0:
-                    errors.append(_error(ErrorCode.INVALID_ENVELOPE, f"{field} must be finite and in (0, 1]", f"detections[{index}].{field}"))
-            if (
-                math.isfinite(detection.x)
-                and math.isfinite(detection.width)
-                and detection.x + detection.width > 1.0
-            ):
+                    errors.append(
+                        _error(
+                            ErrorCode.INVALID_ENVELOPE,
+                            f"{field} must be finite and in (0, 1]",
+                            f"detections[{index}].{field}",
+                        )
+                    )
+            if math.isfinite(detection.x) and math.isfinite(detection.width) and detection.x + detection.width > 1.0:
                 errors.append(_error(ErrorCode.INVALID_ENVELOPE, "x + width must not exceed 1", f"detections[{index}]"))
-            if (
-                math.isfinite(detection.y)
-                and math.isfinite(detection.height)
-                and detection.y + detection.height > 1.0
-            ):
-                errors.append(_error(ErrorCode.INVALID_ENVELOPE, "y + height must not exceed 1", f"detections[{index}]"))
+            if math.isfinite(detection.y) and math.isfinite(detection.height) and detection.y + detection.height > 1.0:
+                errors.append(
+                    _error(ErrorCode.INVALID_ENVELOPE, "y + height must not exceed 1", f"detections[{index}]")
+                )
     elif isinstance(payload, classification_pb2.ClassificationResult):
         errors.extend(_validate_common_camera_payload(payload, envelope))
         for index, score in enumerate(payload.classes):
             if not _finite_in_range(score.confidence, 0.0, 1.0):
-                errors.append(_error(ErrorCode.INVALID_ENVELOPE, "confidence must be finite and in [0, 1]", f"classes[{index}].confidence"))
+                errors.append(
+                    _error(
+                        ErrorCode.INVALID_ENVELOPE,
+                        "confidence must be finite and in [0, 1]",
+                        f"classes[{index}].confidence",
+                    )
+                )
             if index and score.confidence > payload.classes[index - 1].confidence:
-                errors.append(_error(ErrorCode.INVALID_ENVELOPE, "classes must be sorted by descending confidence", "classes"))
+                errors.append(
+                    _error(ErrorCode.INVALID_ENVELOPE, "classes must be sorted by descending confidence", "classes")
+                )
     elif isinstance(payload, target_pose_pb2.TargetPoseResult):
         errors.extend(_validate_common_camera_payload(payload, envelope))
         if payload.coordinate_frame not in {f"camera_{payload.camera_id}", "rov_body", "mission_local"}:
@@ -202,8 +240,23 @@ def _validate_payload(payload: Message, envelope: envelope_pb2.MessageEnvelope) 
         if not _finite_in_range(payload.confidence, 0.0, 1.0):
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "confidence must be finite and in [0, 1]", "confidence"))
         if len(payload.covariance) not in {0, 36}:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "covariance must contain exactly 36 values when present", "covariance"))
-        if not all(math.isfinite(value) for value in (*payload.covariance, payload.x_m, payload.y_m, payload.z_m, payload.roll_rad, payload.pitch_rad, payload.yaw_rad)):
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE, "covariance must contain exactly 36 values when present", "covariance"
+                )
+            )
+        if not all(
+            math.isfinite(value)
+            for value in (
+                *payload.covariance,
+                payload.x_m,
+                payload.y_m,
+                payload.z_m,
+                payload.roll_rad,
+                payload.pitch_rad,
+                payload.yaw_rad,
+            )
+        ):
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "pose values must be finite", "pose"))
     elif isinstance(payload, debug_snapshot_pb2.DebugSnapshot):
         errors.extend(_validate_common_camera_payload(payload, envelope))
@@ -215,30 +268,54 @@ def _validate_payload(payload: Message, envelope: envelope_pb2.MessageEnvelope) 
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "jpeg_quality must be in [1, 95]", "jpeg_quality"))
         dimensions = _jpeg_dimensions(payload.jpeg_data)
         if dimensions is None:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "jpeg_data must contain a structurally valid JPEG image", "jpeg_data"))
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE, "jpeg_data must contain a structurally valid JPEG image", "jpeg_data"
+                )
+            )
         elif dimensions != (payload.width, payload.height):
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "JPEG dimensions must match width and height", "jpeg_data"))
+            errors.append(
+                _error(ErrorCode.INVALID_ENVELOPE, "JPEG dimensions must match width and height", "jpeg_data")
+            )
     elif isinstance(payload, frame_index_pb2.FrameIndex):
         errors.extend(_validate_common_camera_payload(payload, envelope))
     elif isinstance(payload, diagnostics_pb2.DiagnosticStatus):
         if not payload.source_id or payload.source_id != envelope.source_id:
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload and envelope source_id differ", "source_id"))
         if not math.isfinite(payload.process_cpu_percent) or payload.process_cpu_percent < 0.0:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "process_cpu_percent must be finite and non-negative", "process_cpu_percent"))
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE,
+                    "process_cpu_percent must be finite and non-negative",
+                    "process_cpu_percent",
+                )
+            )
         if not math.isfinite(payload.uptime_seconds) or payload.uptime_seconds < 0.0:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "uptime_seconds must be finite and non-negative", "uptime_seconds"))
+            errors.append(
+                _error(ErrorCode.INVALID_ENVELOPE, "uptime_seconds must be finite and non-negative", "uptime_seconds")
+            )
         if payload.HasField("last_error_code") and not is_error_code(payload.last_error_code):
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "last_error_code is not canonical", "last_error_code"))
     elif isinstance(payload, module_state_pb2.ModuleState):
         if not payload.source_id or payload.source_id != envelope.source_id:
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload and envelope source_id differ", "source_id"))
         if len(payload.publisher_session_id) != 16 or payload.publisher_session_id != envelope.publisher_session_id:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload publisher_session_id must match envelope", "publisher_session_id"))
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE,
+                    "payload publisher_session_id must match envelope",
+                    "publisher_session_id",
+                )
+            )
         if payload.error_code and not is_error_code(payload.error_code):
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "error_code is not canonical", "error_code"))
     elif isinstance(payload, clock_status_pb2.ClockStatus):
         if not payload.device_id or not math.isfinite(payload.offset_ms):
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "clock payload requires device_id and finite offset_ms", "clock_status"))
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE, "clock payload requires device_id and finite offset_ms", "clock_status"
+                )
+            )
     elif isinstance(payload, event_pb2.SystemEvent):
         if not payload.event_type or not payload.source_id or payload.source_id != envelope.source_id:
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "event identity does not match envelope", "event"))
@@ -287,16 +364,29 @@ def validate_envelope(
     topic_result = validate_topic(topic)
     errors = [_error(ErrorCode.INVALID_ENVELOPE, detail, "topic") for detail in topic_result.errors]
     if not isinstance(envelope, envelope_pb2.MessageEnvelope):
-        return EnvelopeValidationResult(None, None, topic_result, tuple(errors + [_error(ErrorCode.INVALID_ENVELOPE, "object is not a MessageEnvelope")]))
+        return EnvelopeValidationResult(
+            None,
+            None,
+            topic_result,
+            tuple(errors + [_error(ErrorCode.INVALID_ENVELOPE, "object is not a MessageEnvelope")]),
+        )
     message_size = envelope.ByteSize()
     if serialized_size is not None:
         if isinstance(serialized_size, bool) or not isinstance(serialized_size, int) or serialized_size < 0:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "serialized_size must be a non-negative integer", "envelope"))
+            errors.append(
+                _error(ErrorCode.INVALID_ENVELOPE, "serialized_size must be a non-negative integer", "envelope")
+            )
         else:
             message_size = max(message_size, serialized_size)
-    limit = DEBUG_SNAPSHOT_ENVELOPE_LIMIT_BYTES if envelope.payload_type == "debug_snapshot_v1" else NORMAL_ENVELOPE_LIMIT_BYTES
+    limit = (
+        DEBUG_SNAPSHOT_ENVELOPE_LIMIT_BYTES
+        if envelope.payload_type == "debug_snapshot_v1"
+        else NORMAL_ENVELOPE_LIMIT_BYTES
+    )
     if message_size > limit:
-        errors.append(_error(ErrorCode.MESSAGE_TOO_LARGE, f"envelope is {message_size} bytes; limit is {limit}", "envelope"))
+        errors.append(
+            _error(ErrorCode.MESSAGE_TOO_LARGE, f"envelope is {message_size} bytes; limit is {limit}", "envelope")
+        )
     if envelope.payload_encoding != "protobuf":
         errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload_encoding must be protobuf", "payload_encoding"))
     if envelope.schema_version != 1:
@@ -304,7 +394,9 @@ def validate_envelope(
     if not envelope.source_id:
         errors.append(_error(ErrorCode.INVALID_ENVELOPE, "source_id is required", "source_id"))
     if len(envelope.publisher_session_id) != 16:
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "publisher_session_id must be 16 bytes", "publisher_session_id"))
+        errors.append(
+            _error(ErrorCode.INVALID_ENVELOPE, "publisher_session_id must be 16 bytes", "publisher_session_id")
+        )
     if envelope.HasField("camera_session_id") and len(envelope.camera_session_id) != 16:
         errors.append(_error(ErrorCode.INVALID_ENVELOPE, "camera_session_id must be 16 bytes", "camera_session_id"))
     spec = PAYLOAD_REGISTRY.get(envelope.payload_type)
@@ -314,7 +406,9 @@ def validate_envelope(
     if envelope.message_type != spec.message_type:
         errors.append(_error(ErrorCode.INVALID_ENVELOPE, "message_type does not match payload_type", "message_type"))
     if envelope.payload_size_bytes != len(envelope.payload):
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload_size_bytes does not match payload", "payload_size_bytes"))
+        errors.append(
+            _error(ErrorCode.INVALID_ENVELOPE, "payload_size_bytes does not match payload", "payload_size_bytes")
+        )
     errors.extend(_validate_topic_conflicts(envelope, topic_result, envelope.payload_type))
     if errors:
         return EnvelopeValidationResult(envelope, None, topic_result, tuple(errors))
@@ -322,14 +416,23 @@ def validate_envelope(
     try:
         payload.ParseFromString(envelope.payload)
     except (DecodeError, TypeError, ValueError):
-        return EnvelopeValidationResult(envelope, None, topic_result, (_error(ErrorCode.INVALID_ENVELOPE, "payload protobuf parsing failed", "payload"),))
+        return EnvelopeValidationResult(
+            envelope,
+            None,
+            topic_result,
+            (_error(ErrorCode.INVALID_ENVELOPE, "payload protobuf parsing failed", "payload"),),
+        )
     errors.extend(_validate_payload(payload, envelope))
     if isinstance(payload, clock_status_pb2.ClockStatus) and topic_result.kind is TopicKind.SYSTEM_CLOCK:
         if payload.device_id != topic_result.identifiers["device_id"]:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "topic device_id conflicts with clock payload", "device_id"))
+            errors.append(
+                _error(ErrorCode.INVALID_ENVELOPE, "topic device_id conflicts with clock payload", "device_id")
+            )
     if isinstance(payload, event_pb2.SystemEvent) and topic_result.kind is TopicKind.SYSTEM_EVENT:
         if payload.event_type != topic_result.identifiers["event_type"]:
-            errors.append(_error(ErrorCode.INVALID_ENVELOPE, "topic event_type conflicts with event payload", "event_type"))
+            errors.append(
+                _error(ErrorCode.INVALID_ENVELOPE, "topic event_type conflicts with event payload", "event_type")
+            )
     if not errors and sequence_tracker is not None:
         sequence_error = sequence_tracker.observe(envelope)
         if sequence_error is not None:
@@ -346,14 +449,26 @@ def validate_serialized_envelope(
     """Parse then validate serialized data; malformed input always becomes a result."""
     topic_result = validate_topic(topic)
     if not isinstance(data, bytes):
-        return EnvelopeValidationResult(None, None, topic_result, (_error(ErrorCode.INVALID_ENVELOPE, "envelope frame must be bytes", "envelope"),))
+        return EnvelopeValidationResult(
+            None, None, topic_result, (_error(ErrorCode.INVALID_ENVELOPE, "envelope frame must be bytes", "envelope"),)
+        )
     if len(data) > ZMQ_MAXMSGSIZE:
-        return EnvelopeValidationResult(None, None, topic_result, (_error(ErrorCode.MESSAGE_TOO_LARGE, "envelope exceeds ZeroMQ MAXMSGSIZE", "envelope"),))
+        return EnvelopeValidationResult(
+            None,
+            None,
+            topic_result,
+            (_error(ErrorCode.MESSAGE_TOO_LARGE, "envelope exceeds ZeroMQ MAXMSGSIZE", "envelope"),),
+        )
     envelope = envelope_pb2.MessageEnvelope()
     try:
         envelope.ParseFromString(data)
     except (DecodeError, TypeError, ValueError):
-        return EnvelopeValidationResult(None, None, topic_result, (_error(ErrorCode.INVALID_ENVELOPE, "envelope protobuf parsing failed", "envelope"),))
+        return EnvelopeValidationResult(
+            None,
+            None,
+            topic_result,
+            (_error(ErrorCode.INVALID_ENVELOPE, "envelope protobuf parsing failed", "envelope"),),
+        )
     return validate_envelope(envelope, topic, serialized_size=len(data), sequence_tracker=sequence_tracker)
 
 
@@ -364,19 +479,22 @@ def validate_multipart(
 ) -> EnvelopeValidationResult:
     """Validate the two-frame ZeroMQ data-plane layout and its envelope."""
     if not isinstance(frames, Sequence) or isinstance(frames, (bytes, bytearray, str)) or len(frames) != 2:
-        return EnvelopeValidationResult(None, None, None, (_error("INVALID_MULTIPART_MESSAGE", "data-plane publication must contain exactly two frames"),))
+        return EnvelopeValidationResult(
+            None,
+            None,
+            None,
+            (_error("INVALID_MULTIPART_MESSAGE", "data-plane publication must contain exactly two frames"),),
+        )
     topic, envelope_data = frames
     if not isinstance(topic, bytes) or not isinstance(envelope_data, bytes):
-        return EnvelopeValidationResult(None, None, None, (_error("INVALID_MULTIPART_MESSAGE", "both multipart frames must be bytes"),))
+        return EnvelopeValidationResult(
+            None, None, None, (_error("INVALID_MULTIPART_MESSAGE", "both multipart frames must be bytes"),)
+        )
     return validate_serialized_envelope(envelope_data, topic, sequence_tracker=sequence_tracker)
 
 
 COMMAND_ONEOF_NAMES = frozenset(
-    {
-        "get_status", "start", "stop", "set_mode", "set_dynamic_config",
-        "request_debug_snapshot", "start_recording", "stop_recording", "reset",
-        "get_command_status",
-    }
+    field.name for field in control_pb2.CommandRequest.DESCRIPTOR.oneofs_by_name["command"].fields
 )
 
 
@@ -393,7 +511,9 @@ def validate_command_request(request: control_pb2.CommandRequest) -> ControlVali
     if command_name not in COMMAND_ONEOF_NAMES:
         errors.append(_error(ErrorCode.INVALID_COMMAND, "exactly one supported command is required", "command"))
     if command_name == "get_command_status" and len(request.get_command_status.target_command_id) != 16:
-        errors.append(_error(ErrorCode.INVALID_COMMAND, "target_command_id must be a 16-byte UUID", "target_command_id"))
+        errors.append(
+            _error(ErrorCode.INVALID_COMMAND, "target_command_id must be a 16-byte UUID", "target_command_id")
+        )
     return ControlValidationResult(tuple(errors))
 
 
@@ -414,7 +534,9 @@ def validate_command_response(response: control_pb2.CommandResponse) -> ControlV
         errors.append(_error(ErrorCode.INVALID_COMMAND, "status must be a known non-zero CommandStatus", "status"))
     if response.error_code:
         if not is_command_response_error_code(response.error_code):
-            errors.append(_error(ErrorCode.INVALID_COMMAND, "error_code is not permitted in CommandResponse", "error_code"))
+            errors.append(
+                _error(ErrorCode.INVALID_COMMAND, "error_code is not permitted in CommandResponse", "error_code")
+            )
         elif status_name and ERROR_CODE_CONTRACTS[ErrorCode(response.error_code)].command_status != status_name:
             errors.append(_error(ErrorCode.INVALID_COMMAND, "error_code is incompatible with status", "error_code"))
     return ControlValidationResult(tuple(errors))
@@ -426,16 +548,32 @@ def validate_module_registration(registration: registration_pb2.ModuleRegistrati
     if not isinstance(registration, registration_pb2.ModuleRegistration):
         return ControlValidationResult((_error(ErrorCode.INVALID_ENVELOPE, "object is not a ModuleRegistration"),))
     if not registration.module_id or not registration.task_id or not registration.host_device_id:
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "module_id, task_id, and host_device_id are required", "registration"))
+        errors.append(
+            _error(ErrorCode.INVALID_ENVELOPE, "module_id, task_id, and host_device_id are required", "registration")
+        )
     if len(registration.module_session_id) != 16:
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "module_session_id must be a 16-byte UUID", "module_session_id"))
-    if registration.current_state == 0:
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "current_state is required", "current_state"))
+        errors.append(
+            _error(ErrorCode.INVALID_ENVELOPE, "module_session_id must be a 16-byte UUID", "module_session_id")
+        )
+    try:
+        state_name = module_state_pb2.ComponentState.Name(registration.current_state)
+    except ValueError:
+        state_name = ""
+    if state_name == "COMPONENT_STATE_UNSPECIFIED" or not state_name:
+        errors.append(
+            _error(ErrorCode.INVALID_ENVELOPE, "current_state must be a known non-zero state", "current_state")
+        )
     if registration.process_id == 0:
         errors.append(_error(ErrorCode.INVALID_ENVELOPE, "process_id must be non-zero", "process_id"))
     invalid_commands = set(registration.supported_command_types) - COMMAND_ONEOF_NAMES
     if invalid_commands:
-        errors.append(_error(ErrorCode.INVALID_ENVELOPE, "supported_command_types contains non-canonical name", "supported_command_types"))
+        errors.append(
+            _error(
+                ErrorCode.INVALID_ENVELOPE,
+                "supported_command_types contains non-canonical name",
+                "supported_command_types",
+            )
+        )
     return ControlValidationResult(tuple(errors))
 
 
@@ -444,7 +582,11 @@ def validate_module_registration_response(
 ) -> ControlValidationResult:
     """Validate the canonical error-code field on a registration reply."""
     if not isinstance(response, registration_pb2.ModuleRegistrationResponse):
-        return ControlValidationResult((_error(ErrorCode.INVALID_COMMAND, "object is not a ModuleRegistrationResponse"),))
+        return ControlValidationResult(
+            (_error(ErrorCode.INVALID_COMMAND, "object is not a ModuleRegistrationResponse"),)
+        )
     if response.error_code and not is_error_code(response.error_code):
-        return ControlValidationResult((_error(ErrorCode.INVALID_COMMAND, "error_code is not canonical", "error_code"),))
+        return ControlValidationResult(
+            (_error(ErrorCode.INVALID_COMMAND, "error_code is not canonical", "error_code"),)
+        )
     return ControlValidationResult()

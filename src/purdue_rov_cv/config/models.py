@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 SUPPORTED_SCHEMA_VERSION = 1
+DIAGNOSTICS_PUBLISH_INTERVAL_MIN_MS = 500
+DIAGNOSTICS_PUBLISH_INTERVAL_MAX_MS = 5_000
 
 
 def validate_identifier(value: str) -> str:
@@ -132,7 +134,10 @@ class MessagingConfig(ConfigModel):
 
 
 class DiagnosticsConfig(ConfigModel):
-    publish_interval_ms: int = Field(gt=0, le=60_000)
+    publish_interval_ms: int = Field(
+        ge=DIAGNOSTICS_PUBLISH_INTERVAL_MIN_MS,
+        le=DIAGNOSTICS_PUBLISH_INTERVAL_MAX_MS,
+    )
     log_level: LogLevel
 
     @field_validator("log_level", mode="before")

@@ -6,8 +6,12 @@
 #
 annotated-types==0.7.0
     # via pydantic
+coverage[toml]==7.15.4
+    # via pytest-cov
 iniconfig==2.3.0
     # via pytest
+librt==0.15.0
+    # via mypy
 lz4==4.4.5
     # via mcap
 mcap==1.4.0
@@ -16,12 +20,20 @@ mcap==1.4.0
     #   mcap-protobuf-support
 mcap-protobuf-support==0.5.4
     # via -r requirements.in
+mypy==1.20.2
+    # via -r requirements.in
+mypy-extensions==1.1.0
+    # via mypy
 numpy==2.5.1
     # via -r requirements.in
 packaging==26.2
     # via pytest
+pathspec==1.1.1
+    # via mypy
 pluggy==1.6.0
-    # via pytest
+    # via
+    #   pytest
+    #   pytest-cov
 protobuf==7.35.1
     # via
     #   -r requirements.in
@@ -37,17 +49,23 @@ pygments==2.20.0
 pytest==9.1.1
     # via
     #   -r requirements.in
+    #   pytest-cov
     #   pytest-timeout
-pytest-timeout==2.4.0
+pytest-cov==7.1.0
     # via -r requirements.in
-ruff==0.16.0
+pytest-timeout==2.4.0
     # via -r requirements.in
 pyyaml==6.0.3
     # via -r requirements.in
 pyzmq==27.1.0
     # via -r requirements.in
+ruff==0.16.0
+    # via -r requirements.in
+types-pyyaml==6.0.12.20260815
+    # via -r requirements.in
 typing-extensions==4.16.0
     # via
+    #   mypy
     #   pydantic
     #   pydantic-core
     #   typing-inspection

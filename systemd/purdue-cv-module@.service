@@ -1,0 +1,15 @@
+[Unit]
+Description=Purdue ROV CV module runner (%i)
+After=purdue-cv-broker.service purdue-cv-control-router.service
+Requires=purdue-cv-broker.service purdue-cv-control-router.service
+
+[Service]
+Type=simple
+ExecStart=/opt/purdue-rov-cv/.venv/bin/purdue-cv-module-runner --task %i --config /etc/purdue-rov-cv/mission.yaml
+Restart=on-failure
+RestartSec=1
+TimeoutStopSec=5
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

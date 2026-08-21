@@ -28,5 +28,13 @@ jobs:
         run: |
           bash scripts/generate_proto.sh
           git diff --exit-code -- generated/python
+      - name: Check runtime and messaging types
+        run: python -m mypy
+      - name: Lint and check formatting
+        run: |
+          python -m ruff check src tests
+          python -m ruff format --check src tests
       - name: Run tests
-        run: python -m pytest
+        run: |
+          python -m pytest --cov=purdue_rov_cv --cov-report=term-missing --cov-fail-under=80
+          python -m coverage report --include='*/purdue_rov_cv/modules/*' --fail-under=70

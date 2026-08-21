@@ -100,7 +100,9 @@ def _check_port_availability(host: str, port: int, protocol: str) -> str | None:
 def _matches_stepped_value(value: int, minimum: int, maximum: int, step: int | None) -> bool:
     if not minimum <= value <= maximum:
         return False
-    return step in (None, 0) or (value - minimum) % step == 0
+    if step is None or step == 0:
+        return True
+    return (value - minimum) % step == 0
 
 
 def _matches_frame_interval(
@@ -113,7 +115,7 @@ def _matches_frame_interval(
     tolerance = 1e-6
     if not minimum_seconds - tolerance <= requested_seconds <= maximum_seconds + tolerance:
         return False
-    if step_seconds in (None, 0.0):
+    if step_seconds is None or step_seconds == 0.0:
         return True
     quotient = (requested_seconds - minimum_seconds) / step_seconds
     return math.isclose(quotient, round(quotient), abs_tol=tolerance)

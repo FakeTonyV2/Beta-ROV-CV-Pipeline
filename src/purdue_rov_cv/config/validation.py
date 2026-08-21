@@ -262,8 +262,8 @@ def validate_static_config(config: AppConfig) -> tuple[ConfigIssue, ...]:
 
     for task_id, task in sorted(config.tasks.items()):
         path = f"tasks.{task_id}"
-        camera = config.cameras.get(task.input_camera)
-        if camera is None:
+        task_camera = config.cameras.get(task.input_camera)
+        if task_camera is None:
             issues.append(
                 _issue(
                     "TASK_CAMERA_MISSING",
@@ -272,7 +272,7 @@ def validate_static_config(config: AppConfig) -> tuple[ConfigIssue, ...]:
                     value=task.input_camera,
                 )
             )
-        elif task.enabled and not camera.cv_enabled:
+        elif task.enabled and not task_camera.cv_enabled:
             issues.append(
                 _issue(
                     "TASK_CAMERA_INCOMPATIBLE",

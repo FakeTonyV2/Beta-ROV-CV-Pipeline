@@ -1,6 +1,8 @@
 # Beta ROV CV Pipeline
 
-Phase 0 establishes the reproducible runtime contract for the modular CV pipeline.
+The repository includes the Phase 1–3 wire, configuration, and runtime contracts,
+Phase 4's real ZeroMQ data broker and control router, and Phase 5's isolated
+production module runner and Echo reference task.
 
 Reference platforms:
 
@@ -39,6 +41,40 @@ Ruff can apply safe automatic fixes with:
 ```
 
 Review the resulting diff, then rerun the first command to confirm the tree is clean.
+
+Run the configured static type check with:
+
+```bash
+.venv/bin/python -m mypy
+```
+
+Check formatting with the same command used by CI:
+
+```bash
+.venv/bin/python -m ruff format --check src tests
+```
+
+Run all tests, or the Phase 4/5 process integrations specifically, with:
+
+```bash
+.venv/bin/python -m pytest
+.venv/bin/python -m pytest tests/integration/test_phase4_processes.py
+.venv/bin/python -m pytest tests/integration/test_phase5_module_runner_processes.py
+```
+
+The installed service entry points load the mission configuration and
+translate failures to the supervisor exit-code contract:
+
+```bash
+purdue-cv-broker --config config/mission.yaml
+purdue-cv-control-router --config config/mission.yaml
+purdue-cv-module-runner --task gate_detection --config config/mission.yaml
+```
+
+See [docs/broker-control-routing.md](docs/broker-control-routing.md) for control
+framing, registration, heartbeat, cache, metric, and socket-ownership details.
+See [docs/module-runner.md](docs/module-runner.md) for module, shared-memory,
+threading, publication, watchdog, and shutdown contracts.
 
 Before a mission, run the Pi preflight with the deployed camera paths, for example:
 

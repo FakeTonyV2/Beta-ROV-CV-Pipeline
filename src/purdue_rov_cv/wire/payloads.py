@@ -27,7 +27,7 @@ MessageClass: TypeAlias = type[Message]
 @dataclass(frozen=True)
 class PayloadSpec:
     message_class: MessageClass
-    message_type: int
+    message_type: envelope_pb2.MessageType
     topic_kinds: frozenset[TopicKind]
 
 

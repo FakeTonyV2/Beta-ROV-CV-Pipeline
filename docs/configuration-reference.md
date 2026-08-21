@@ -24,12 +24,14 @@ rov-cv config validate config/mission.yaml
 rov-cv config validate config/mission.yaml --probe-hardware
 ```
 
-The static command returns `0` when valid and `2` for a missing file, malformed
-YAML, schema error, or static rule violation. Errors start with canonical
-`CONFIG_INVALID`, followed by a diagnostic kind and YAML path.
-`--probe-hardware` returns `0` only when live checks pass, `3` when the host
-cannot run the probe (non-Linux or missing `v4l2-ctl`), and `4` when deployed
-hardware, artifacts, runtimes, or endpoints do not meet the configuration.
+The command returns `0` when valid, `74` when an existing configuration cannot
+be read because of an I/O failure, and `78` for a missing/malformed/invalid
+configuration or incompatible hardware deployment. Invalid command-line syntax
+returns `64`; an unexpected installed-CLI failure returns `70`. Errors start
+with canonical `CONFIG_INVALID`, followed by a diagnostic kind and YAML path.
+`--probe-hardware` returns `0` only when live checks pass and `78` when the host
+cannot run the probe or deployed hardware, artifacts, runtimes, or endpoints do
+not meet the configuration.
 
 ## Fields
 
@@ -43,7 +45,7 @@ hardware, artifacts, runtimes, or endpoints do not meet the configuration.
 | `messaging.broker.publisher_endpoint`, `messaging.broker.subscriber_endpoint`, `messaging.control.client_endpoint` | `tcp://<IPv4>:<port>` | Static | Literal IPv4, port 1-65535, and wildcard-aware TCP collision checking. | Linux preflight attempts a bind then closes it. This follows the current contract that every listed TCP endpoint is local; add endpoint-role fields before changing that assumption. | `tcp://192.168.50.2:5555` |
 | `messaging.control.module_endpoint` | absolute `ipc:///` socket path | Static | Reject root, traversal, trailing separators, and malformed IPC endpoints. | Preflight checks that the parent directory is usable and the socket pathname is free. | `ipc:///run/purdue-rov-cv/module-control.sock` |
 | `messaging.max_message_bytes`, `result_send_hwm`, `result_receive_hwm` | positive integers | Static | Message limit <=4 MiB; HWM <=10000. | None. | `4194304`, `5` |
-| `diagnostics.publish_interval_ms` | integer 1-60000 | Dynamic | Range only. | Sent to every enabled task module. | `1000` |
+| `diagnostics.publish_interval_ms` | integer 500-5000 | Dynamic | Health publication interval contract. | Sent to every enabled task module. | `1000` |
 | `diagnostics.log_level` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Unsupported | Enum only; may be supplied by the allowed environment override. | Requires later runtime integration. | `INFO` |
 | `debug_snapshots.enabled`, `maximum_rate_hz`, `jpeg_quality` | boolean, 0-60 Hz, 1-95 | Dynamic | Bounds and type checks. | Sent to every enabled task module. | `true`, `1.0`, `70` |
 | `debug_snapshots.maximum_width`, `maximum_height` | integer 1-640 / 1-360 | Static | JPEG dimension bounds. | Camera/image support is a runtime responsibility. | `640`, `360` |

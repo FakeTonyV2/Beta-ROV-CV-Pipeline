@@ -1,0 +1,15 @@
+[Unit]
+Description=Purdue ROV CV data broker
+Wants=network-online.target
+After=network-online.target chronyd.service
+Before=purdue-cv-control-router.service
+
+[Service]
+Type=simple
+ExecStart=/opt/purdue-rov-cv/.venv/bin/purdue-cv-broker --config /etc/purdue-rov-cv/mission.yaml
+Restart=on-failure
+RestartSec=1
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

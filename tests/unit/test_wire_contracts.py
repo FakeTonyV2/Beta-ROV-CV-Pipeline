@@ -57,7 +57,9 @@ def _payload_and_topic(payload_type: str):
     if payload_type == "bounding_boxes_v1":
         return (
             bounding_box_pb2.BoundingBoxResult(
-                camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7,
+                camera_id="front",
+                camera_session_id=CAMERA_SESSION,
+                frame_number=7,
                 capture_time_unix_ns=12,
                 detections=[bounding_box_pb2.Detection(confidence=0.8, x=0.1, y=0.2, width=0.3, height=0.4)],
             ),
@@ -66,7 +68,9 @@ def _payload_and_topic(payload_type: str):
     if payload_type == "classification_result_v1":
         return (
             classification_pb2.ClassificationResult(
-                camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7,
+                camera_id="front",
+                camera_session_id=CAMERA_SESSION,
+                frame_number=7,
                 capture_time_unix_ns=12,
                 classes=[classification_pb2.ClassScore(confidence=0.8)],
             ),
@@ -75,8 +79,12 @@ def _payload_and_topic(payload_type: str):
     if payload_type == "target_pose_v1":
         return (
             target_pose_pb2.TargetPoseResult(
-                camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7,
-                capture_time_unix_ns=12, coordinate_frame="camera_front", confidence=0.8,
+                camera_id="front",
+                camera_session_id=CAMERA_SESSION,
+                frame_number=7,
+                capture_time_unix_ns=12,
+                coordinate_frame="camera_front",
+                confidence=0.8,
             ),
             "cv.result.gate_detection.front",
         )
@@ -86,13 +94,23 @@ def _payload_and_topic(payload_type: str):
         return module_state_pb2.ModuleState(source_id="module", publisher_session_id=SESSION), "cv.state.module"
     if payload_type == "frame_index_v1":
         return (
-            frame_index_pb2.FrameIndex(camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7, capture_time_unix_ns=12),
+            frame_index_pb2.FrameIndex(
+                camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7, capture_time_unix_ns=12
+            ),
             "cv.frame_index.front",
         )
     if payload_type == "debug_snapshot_v1":
         return (
-            debug_snapshot_pb2.DebugSnapshot(camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7,
-                capture_time_unix_ns=12, width=1, height=1, jpeg_quality=70, jpeg_data=JPEG_1X1),
+            debug_snapshot_pb2.DebugSnapshot(
+                camera_id="front",
+                camera_session_id=CAMERA_SESSION,
+                frame_number=7,
+                capture_time_unix_ns=12,
+                width=1,
+                height=1,
+                jpeg_quality=70,
+                jpeg_data=JPEG_1X1,
+            ),
             "cv.debug_snapshot.front",
         )
     if payload_type == "clock_status_v1":
@@ -109,7 +127,10 @@ def _envelope(payload_type: str):
         message_type=spec.message_type,
         payload_type=payload_type,
         source_id={
-            "diagnostic_status_v1": "camera", "module_state_v1": "module", "clock_status_v1": "pi5", "system_event_v1": "pi5",
+            "diagnostic_status_v1": "camera",
+            "module_state_v1": "module",
+            "clock_status_v1": "pi5",
+            "system_event_v1": "pi5",
         }.get(payload_type, "module"),
         publisher_session_id=SESSION,
         schema_version=1,
@@ -181,7 +202,18 @@ def test_required_topics_are_valid(topic, kind, identifiers):
     assert result.identifiers == identifiers
 
 
-@pytest.mark.parametrize("topic", [b"\xff", "CV.result.task.camera", "cv..result.task.camera", ".cv.result.task.camera", "cv.result.task.camera.", "cv.result.onlythree", "a" * 129])
+@pytest.mark.parametrize(
+    "topic",
+    [
+        b"\xff",
+        "CV.result.task.camera",
+        "cv..result.task.camera",
+        ".cv.result.task.camera",
+        "cv.result.task.camera.",
+        "cv.result.onlythree",
+        "a" * 129,
+    ],
+)
 def test_invalid_topics_are_rejected_without_raising(topic):
     assert not validate_topic(topic).valid
 
@@ -300,8 +332,19 @@ def test_error_code_contract_is_complete_and_marks_non_response_codes():
     assert not ERROR_CODE_CONTRACTS[ErrorCode.UNKNOWN_PAYLOAD_TYPE].command_response_allowed
     assert not ERROR_CODE_CONTRACTS[ErrorCode.INVALID_ENVELOPE].command_response_allowed
     assert ERROR_CODE_CONTRACTS[ErrorCode.INVALID_COMMAND].command_response_allowed
+    assert ERROR_CODE_CONTRACTS[ErrorCode.TARGET_SEND_TIMEOUT].command_response_allowed
+    for code in (
+        ErrorCode.MODEL_NOT_FOUND,
+        ErrorCode.MODEL_HASH_MISMATCH,
+        ErrorCode.MODEL_LOAD_FAILED,
+        ErrorCode.RUNTIME_UNAVAILABLE,
+        ErrorCode.TARGET_INCOMPATIBLE,
+    ):
+        assert ERROR_CODE_CONTRACTS[code].exit_code == "78"
+    assert ERROR_CODE_CONTRACTS[ErrorCode.PROCESSING_WATCHDOG_EXCEEDED].exit_code == "75"
     assert not is_command_response_error_code("UNKNOWN_PAYLOAD_TYPE")
     assert is_command_response_error_code("INVALID_COMMAND")
+    assert is_command_response_error_code("TARGET_SEND_TIMEOUT")
     assert not is_command_response_error_code("not_a_code")
     assert is_error_code("UNKNOWN_PAYLOAD_TYPE")
     assert not is_error_code("not_a_code")
@@ -318,7 +361,16 @@ def test_dealer_identity_validation(identity):
     assert validate_dealer_identity(identity).valid
 
 
-@pytest.mark.parametrize("identity", [b"\xff", "client:not-a-uuid", "client:123E4567-E89B-12D3-A456-426614174000", "module::123e4567-e89b-12d3-a456-426614174000", "x" * 129])
+@pytest.mark.parametrize(
+    "identity",
+    [
+        b"\xff",
+        "client:not-a-uuid",
+        "client:123E4567-E89B-12D3-A456-426614174000",
+        "module::123e4567-e89b-12d3-a456-426614174000",
+        "x" * 129,
+    ],
+)
 def test_invalid_dealer_identity_is_safe(identity):
     assert not validate_dealer_identity(identity).valid
 
@@ -334,13 +386,33 @@ def test_control_and_registration_uuid_validation():
     assert not validate_command_request(request).valid
 
     registration = registration_pb2.ModuleRegistration(
-        module_id="gate-module", task_id="gate_detection", module_session_id=SESSION,
-        supported_command_types=["start", "get_status"], current_state=1,
-        process_id=12, host_device_id="pi5",
+        module_id="gate-module",
+        task_id="gate_detection",
+        module_session_id=SESSION,
+        supported_command_types=["start", "get_status"],
+        current_state=1,
+        process_id=12,
+        host_device_id="pi5",
     )
     assert validate_module_registration(registration).valid
     registration.module_session_id = b"short"
     assert not validate_module_registration(registration).valid
+
+
+@pytest.mark.parametrize("current_state", [0, 999])
+def test_registration_rejects_unspecified_and_unknown_component_states(current_state):
+    registration = registration_pb2.ModuleRegistration(
+        module_id="gate-module",
+        task_id="gate_detection",
+        module_session_id=SESSION,
+        supported_command_types=["start", "get_status"],
+        current_state=current_state,
+        process_id=12,
+        host_device_id="pi5",
+    )
+    result = validate_module_registration(registration)
+    assert not result.valid
+    assert any(error.field == "current_state" for error in result.errors)
 
 
 def test_command_and_registration_response_error_code_contracts():

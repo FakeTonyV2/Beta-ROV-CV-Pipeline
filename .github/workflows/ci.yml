@@ -13,12 +13,10 @@ jobs:
         env:
           ALLOW_NON_REFERENCE_PLATFORM: "1"
         run: |
-          ./scripts/setup_system_deps.sh
-          ./scripts/setup_venv.sh
+          bash scripts/setup_system_deps.sh
+          bash scripts/setup_venv.sh
       - name: Verify imports and dependencies
         run: |
-          bash scripts/setup_system_deps.sh
-          bash scripts/setup_venv.sh
           .venv/bin/python scripts/smoke_imports.py
           .venv/bin/python scripts/verify_dependencies.py
       - name: Verify protobuf generation is reproducible

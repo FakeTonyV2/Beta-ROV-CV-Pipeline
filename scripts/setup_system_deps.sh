@@ -31,12 +31,12 @@ SYSTEM_PACKAGES=(
     gstreamer1.0-libav
 
     # PyGObject / GObject Introspection Bindings
+    python3.12-venv
     gir1.2-gstreamer-1.0
     gir1.2-gst-plugins-base-1.0
     python3-gi
     python3-gst-1.0
     python3-cairo
-    gir1.2-gstreamer-1.0
 
     # protobuf Compiler
     protobuf-compiler

@@ -26,7 +26,9 @@ _NORMAL_TRANSITIONS: dict[ComponentState, frozenset[ComponentState]] = {
     ComponentState.STARTING: frozenset(
         {ComponentState.READY, ComponentState.DEGRADED, ComponentState.ERROR, ComponentState.STOPPING}
     ),
-    ComponentState.READY: frozenset({ComponentState.RUNNING, ComponentState.STOPPING, ComponentState.ERROR}),
+    ComponentState.READY: frozenset(
+        {ComponentState.RUNNING, ComponentState.DEGRADED, ComponentState.STOPPING, ComponentState.ERROR}
+    ),
     ComponentState.RUNNING: frozenset(
         {ComponentState.READY, ComponentState.DEGRADED, ComponentState.ERROR, ComponentState.STOPPING}
     ),

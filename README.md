@@ -3,6 +3,8 @@
 The repository includes the Phase 1–3 wire, configuration, and runtime contracts,
 Phase 4's real ZeroMQ data broker and control router, and Phase 5's isolated
 production module runner and Echo reference task.
+It also includes Phase 6's simulated GStreamer camera service and canonical
+lock-free shared-memory triple buffer.
 
 Reference platforms:
 
@@ -20,7 +22,10 @@ source .venv/bin/activate
 ```
 
 The Python dependency set is locked in `requirements.lock`. `pip check` and the
-import smoke test are part of CI. Protobuf generation is pinned by `.protoc-version`:
+import smoke test are part of CI. The venv uses `--system-site-packages` only so
+Python 3.12 can load Ubuntu 24.04's ABI-matched `python3-gi` and
+`python3-gst-1.0`; PyGObject is intentionally not installed from PyPI. Protobuf
+generation is pinned by `.protoc-version`:
 
 ```bash
 ./scripts/generate_proto.sh
@@ -60,6 +65,7 @@ Run all tests, or the Phase 4/5 process integrations specifically, with:
 .venv/bin/python -m pytest
 .venv/bin/python -m pytest tests/integration/test_phase4_processes.py
 .venv/bin/python -m pytest tests/integration/test_phase5_module_runner_processes.py
+.venv/bin/python -m pytest tests/integration/test_phase6_processes.py
 ```
 
 The installed service entry points load the mission configuration and
@@ -69,12 +75,16 @@ translate failures to the supervisor exit-code contract:
 purdue-cv-broker --config config/mission.yaml
 purdue-cv-control-router --config config/mission.yaml
 purdue-cv-module-runner --task gate_detection --config config/mission.yaml
+purdue-cv-camera --camera front_camera --config config/mission.yaml
 ```
 
 See [docs/broker-control-routing.md](docs/broker-control-routing.md) for control
 framing, registration, heartbeat, cache, metric, and socket-ownership details.
 See [docs/module-runner.md](docs/module-runner.md) for module, shared-memory,
 threading, publication, watchdog, and shutdown contracts.
+See [docs/shared-memory-frame-buffer.md](docs/shared-memory-frame-buffer.md) for
+the exact 128-byte header, ownership/recovery policy, and simulated camera
+lifecycle.
 
 Before a mission, run the Pi preflight with the deployed camera paths, for example:
 

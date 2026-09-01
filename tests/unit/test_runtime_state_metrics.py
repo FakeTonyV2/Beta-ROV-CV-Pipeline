@@ -34,6 +34,7 @@ NORMAL_TRANSITIONS = (
     (ComponentState.STARTING, ComponentState.ERROR),
     (ComponentState.STARTING, ComponentState.STOPPING),
     (ComponentState.READY, ComponentState.RUNNING),
+    (ComponentState.READY, ComponentState.DEGRADED),
     (ComponentState.READY, ComponentState.STOPPING),
     (ComponentState.READY, ComponentState.ERROR),
     (ComponentState.RUNNING, ComponentState.READY),

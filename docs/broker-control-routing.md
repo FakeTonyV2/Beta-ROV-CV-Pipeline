@@ -133,8 +133,10 @@ reordered messages are invalid and do not create negative gaps.
 
 Phase 4 closes real ZeroMQ send-loop, ZeroMQ cleanup, broker/router signal
 shutdown, control registration, and supervisor exit-translation risks.
-Production GStreamer teardown and shared-memory cleanup remain owned by the
-camera/module service phase because those resources do not yet exist here. The
-full broker-camera-module-subscriber-recorder trajectory likewise remains
-deferred until production camera shared memory and recorder persistence exist;
-the current process harness deliberately uses replaceable simulated endpoints.
+Phase 6 now owns and tests simulated GStreamer teardown, camera-created
+shared-memory cleanup/stale recovery, and the camera-to-module-runner portion of
+the process trajectory. Physical V4L2/DepthAI teardown remains owned by the
+physical-camera subsystem because Phase 6 does not open those resources. The
+remaining full trajectory through a production subscriber and persistent
+recorder is owned by the recorder/data-plane receiver subsystem; that receiver
+also owns `observed_sequence_gaps` because the broker remains payload-agnostic.

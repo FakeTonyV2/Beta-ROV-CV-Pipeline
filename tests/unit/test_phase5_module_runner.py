@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import mmap
+import struct
 import threading
 import time
 from collections.abc import Iterator
+from multiprocessing import shared_memory
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -20,17 +21,18 @@ from purdue_rov.cv.v1 import bounding_box_pb2, control_pb2
 from purdue_rov_cv.config.issues import ConfigIssue
 from purdue_rov_cv.config.loader import load_config
 from purdue_rov_cv.config.models import AppConfig
+from purdue_rov_cv.frame_buffer import (
+    HEADER_SIZE,
+    FrameWrite,
+    PixelFormat,
+    SharedMemoryFrameReader,
+    SharedMemoryFrameWriter,
+    shared_memory_name,
+)
 from purdue_rov_cv.messaging.cache import CommandReservationStatus, CommandStatusCache
 from purdue_rov_cv.module_runner.artifacts import ArtifactValidationError, ArtifactValidator
 from purdue_rov_cv.module_runner.entrypoints import load_module, module_runner_entrypoint
-from purdue_rov_cv.module_runner.frame_source import (
-    SHARED_FRAME_DTYPE_UINT8,
-    SHARED_FRAME_HEADER,
-    SHARED_FRAME_MAGIC,
-    SHARED_FRAME_VERSION,
-    FrameSourceInvalid,
-    SharedMemoryFrameSource,
-)
+from purdue_rov_cv.module_runner.frame_source import FrameSourceInvalid, SharedMemoryFrameSource
 from purdue_rov_cv.module_runner.publisher import PublicationItem, ResultPublisher, configure_result_publisher
 from purdue_rov_cv.module_runner.service import (
     RUNNER_SUPPORTED_COMMANDS,
@@ -292,54 +294,80 @@ def test_worker_watchdog_threshold_progress_and_stall() -> None:
     assert watchdog.escalation().event_code == ErrorCode.PROCESSING_WATCHDOG_EXCEEDED
 
 
-def _write_shared_frame(path: Path, *, valid_magic: bool = True) -> None:
+def test_shared_memory_source_attaches_copies_and_never_unlinks() -> None:
+    name = shared_memory_name("front_camera")
+    writer = SharedMemoryFrameWriter("front_camera", 64, UUID(int=50).bytes)
+    reader = SharedMemoryFrameReader("front_camera", unregister_from_resource_tracker=False)
+    source = SharedMemoryFrameSource(name, camera_id="front_camera", reader=reader)
     pixels = np.arange(18, dtype=np.uint8).reshape((2, 3, 3))
-    with path.open("w+b") as file:
-        file.truncate(SHARED_FRAME_HEADER.size + pixels.nbytes)
-        with mmap.mmap(file.fileno(), length=0, access=mmap.ACCESS_WRITE) as mapping:
-            header = SHARED_FRAME_HEADER.pack(
-                SHARED_FRAME_MAGIC if valid_magic else b"INVALID!",
-                SHARED_FRAME_VERSION,
-                2,
-                3,
-                2,
-                3,
-                SHARED_FRAME_DTYPE_UINT8,
-                UUID(int=50).bytes,
-                7,
-                8,
-                9,
-            )
-            mapping[: SHARED_FRAME_HEADER.size] = header
-            mapping[SHARED_FRAME_HEADER.size :] = pixels.tobytes()
+    try:
+        writer.open()
+        writer.write(FrameWrite(pixels.tobytes(), 3, 2, 9, PixelFormat.BGR8, 7, 8, 9))
+        assert source.attach()
+        frame = source.read(0.0)
+        assert frame is not None and frame.frame_number == 7
+        writer.write(FrameWrite(bytes([99]) * 18, 3, 2, 9, PixelFormat.BGR8, 8, 10, 11))
+        assert np.array_equal(frame.pixels, pixels)
+        source.close()
+        verifier = shared_memory.SharedMemory(name=name, create=False)
+        verifier.close()
+    finally:
+        source.close()
+        writer.close()
 
 
-def test_shared_memory_source_attaches_copies_and_never_unlinks(tmp_path: Path) -> None:
-    path = tmp_path / "camera"
-    _write_shared_frame(path)
-    source = SharedMemoryFrameSource("camera", camera_id="front_camera", directory=tmp_path)
-    assert source.attach()
-    frame = source.read(0.0)
-    assert frame is not None and frame.frame_number == 7
-    assert frame.pixels.shape == (2, 3, 3)
-    with path.open("r+b", buffering=0) as file:
-        with mmap.mmap(file.fileno(), length=0, access=mmap.ACCESS_WRITE) as mapping:
-            mapping[SHARED_FRAME_HEADER.size :] = bytes([99]) * frame.pixels.nbytes
-    assert np.array_equal(frame.pixels, np.arange(18, dtype=np.uint8).reshape((2, 3, 3)))
-    assert source.read(0.0) is None
-    source.close()
-    assert path.exists()
-
-
-def test_shared_memory_source_missing_and_invalid_header(tmp_path: Path) -> None:
-    source = SharedMemoryFrameSource("missing", camera_id="front_camera", directory=tmp_path)
+def test_shared_memory_source_missing_and_invalid_header() -> None:
+    name = shared_memory_name("front_camera")
+    source = SharedMemoryFrameSource(name, camera_id="front_camera")
     assert not source.attach()
-    _write_shared_frame(tmp_path / "invalid", valid_magic=False)
-    invalid = SharedMemoryFrameSource("invalid", camera_id="front_camera", directory=tmp_path)
-    assert invalid.attach()
-    with pytest.raises(FrameSourceInvalid):
-        invalid.read(0.0)
-    invalid.close()
+    invalid = shared_memory.SharedMemory(name=name, create=True, size=HEADER_SIZE + 3 * 64)
+    try:
+        invalid.buf[:] = bytes(len(invalid.buf))
+        invalid.buf[:8] = b"INVALID!"
+        struct.pack_into("<I", invalid.buf, 76, 123)
+        with pytest.raises(FrameSourceInvalid):
+            source.attach()
+    finally:
+        source.close()
+        invalid.close()
+        invalid.unlink()
+
+
+def test_shared_memory_source_reports_disconnect_and_reattachment() -> None:
+    camera_id = "front_camera"
+    name = shared_memory_name(camera_id)
+    metrics = RuntimeMetrics()
+    first = SharedMemoryFrameWriter(camera_id, 64, UUID(int=51).bytes)
+    reader = SharedMemoryFrameReader(camera_id, unregister_from_resource_tracker=False)
+    source = SharedMemoryFrameSource(name, camera_id=camera_id, metrics=metrics, reader=reader)
+    replacement: SharedMemoryFrameWriter | None = None
+    try:
+        first.open()
+        first.write(FrameWrite(bytes(18), 3, 2, 9, PixelFormat.BGR8, 0, 1, 2))
+        assert source.attach()
+        assert source.read(0.0) is not None
+        assert metrics.snapshot().values["input_source_present"] is True
+
+        first.close()
+        assert source.read(0.0) is None
+        lost = metrics.snapshot().values
+        assert lost["input_source_present"] is False
+        assert lost["shared_memory_disconnects"] == 1
+
+        replacement = SharedMemoryFrameWriter(camera_id, 64, UUID(int=52).bytes)
+        replacement.open()
+        replacement.write(FrameWrite(bytes([9]) * 18, 3, 2, 9, PixelFormat.BGR8, 0, 3, 4))
+        assert source.attach()
+        recovered = source.read(0.0)
+        assert recovered is not None and recovered.camera_session_id == UUID(int=52).bytes
+        values = metrics.snapshot().values
+        assert values["input_source_present"] is True
+        assert values["shared_memory_reattach_count"] == 1
+    finally:
+        source.close()
+        first.close()
+        if replacement is not None:
+            replacement.close()
 
 
 def test_artifact_adapter_reports_phase2_issues_and_load_failure() -> None:

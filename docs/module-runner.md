@@ -20,12 +20,25 @@ control DEALER owner -> ControlCommandQueue(16) -> module worker
     -> ControlResultQueue(16) -> control DEALER owner
 ```
 
-The shared-memory consumer opens `/dev/shm/<name>` read-only. Its versioned
-header uses `SHARED_FRAME_HEADER` and an odd/even sequence seqlock. The consumer
-copies pixels once into a process-private snapshot, transfers ownership of that
-snapshot into the frame queue without another full-frame copy, closes its mmap
-and file handle during shutdown, and never creates or unlinks the object. The
-camera service owns creation, writes, and unlinking.
+The frame ingress adapter delegates to the canonical Phase 6
+`SharedMemoryFrameReader`; it does not parse `SharedMemory.buf`. The reader
+validates the fixed 128-byte header, triple-buffer bounds, format, stride, and
+odd/even generation contract before returning a process-private snapshot. It
+reattaches when a camera restart recreates the stable segment, closes only its
+consumer handle during shutdown, and never unlinks. The camera service owns
+creation, writes, stale-owner recovery, and normal unlink. See
+`docs/shared-memory-frame-buffer.md` for the language-independent binary layout.
+
+The available v1 lifecycle contract does not define a post-start module state
+transition for temporary camera loss. The current safe behavior therefore keeps
+an already running module `RUNNING`, stops receiving new frames, and transparently
+reattaches. It never reaccepts a stale generation. Loss and recovery are exposed
+through `input_source_present`, `shared_memory_disconnects`, and
+`shared_memory_reattach_count`, one structured warning/recovery pair per episode,
+and the externally published `frames_read` counter ceasing/resuming. Readiness
+events remain startup prerequisites and are not reinterpreted as recovery state.
+A future specification revision must choose explicitly between this behavior and
+a module-state degradation transition before downstream phases rely on it.
 
 `frames_read` increments once when ingress accepts a sampled source frame.
 `frames_processed` increments once after `process()` returns a valid output list.
@@ -81,8 +94,8 @@ hooks on the worker, closes DEALER with zero linger, terminates the runner's ZMQ
 context, and completes as `STOPPED`. Cleanup is bounded; a stuck thread requests
 exit 75.
 
-The camera-service phase remains responsible for GStreamer teardown and
-shared-memory creation/unlink. A later production data-plane subscriber/recorder
+Phase 6 owns simulated GStreamer teardown and shared-memory creation/unlink. A
+later production data-plane subscriber/recorder
 receiver owns `observed_sequence_gaps`; this runner reads frames from shared
 memory and has no MessageEnvelope subscriber. Full installed-systemd deployment
 testing belongs to the deployment/provisioning phase; Phase 5 supplies and tests

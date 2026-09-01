@@ -19,6 +19,8 @@ MODULES = (
     "yaml",
     "purdue_rov.cv.v1.envelope_pb2",
     "purdue_rov_cv.config",
+    "purdue_rov_cv.camera",
+    "purdue_rov_cv.frame_buffer",
     "purdue_rov_cv.messaging",
     "purdue_rov_cv.module_runner",
     "purdue_rov_cv.modules",
@@ -30,6 +32,11 @@ def main() -> None:
     for name in MODULES:
         import_module(name)
         print(f"ok: {name}")
+    gi = import_module("gi")
+    gi.require_version("Gst", "1.0")
+    gst = import_module("gi.repository.Gst")
+    gst.init(None)
+    print(f"ok: gi.repository.Gst ({gst.version_string()})")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from purdue_rov_cv.config.loader import load_config
 from purdue_rov_cv.modules.base import CVModule
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.json_logging import configure_json_logger
+from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.runtime.publisher import PublisherSequence
 from purdue_rov_cv.wire.errors import ErrorCode
 
@@ -81,9 +82,12 @@ def module_runner_main(argv: list[str] | None = None) -> ExitCode:
                     context={"path": issue.path, "state": "ERROR", "task_id": args.task},
                 )
             raise
+    metrics = RuntimeMetrics()
     source = SharedMemoryFrameSource(
         args.shared_memory_name or f"purdue_rov_cv_{task.input_camera}",
         camera_id=task.input_camera,
+        expected_slot_capacity_bytes=config.cameras[task.input_camera].slot_capacity_bytes,
+        metrics=metrics,
     )
     service = ModuleRunnerService(
         config,
@@ -91,6 +95,7 @@ def module_runner_main(argv: list[str] | None = None) -> ExitCode:
         module,
         source,
         logger=logger,
+        metrics=metrics,
         publisher_sequence=publisher_sequence,
         install_signals=True,
     )

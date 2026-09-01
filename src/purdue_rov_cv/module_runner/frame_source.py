@@ -1,27 +1,19 @@
-"""Read-only consumer for the camera-owned shared-memory frame contract."""
+"""Phase 5 frame ingress backed by the canonical Phase 6 reader."""
 
 from __future__ import annotations
 
-import mmap
-import os
-import re
-import struct
 import time
 from collections.abc import Callable
-from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import Protocol
 
-import numpy as np
-
+from purdue_rov_cv.frame_buffer import (
+    ReadStatus,
+    SharedMemoryFrameReader,
+    SharedMemoryInvalid,
+    shared_memory_name,
+)
 from purdue_rov_cv.modules.base import Frame
-
-SHARED_FRAME_MAGIC = b"PROVCV1\0"
-SHARED_FRAME_VERSION = 1
-SHARED_FRAME_DTYPE_UINT8 = 1
-# Writers use an odd sequence while mutating and publish the next even value.
-SHARED_FRAME_HEADER = struct.Struct("<8sIQIIII16sQqq")
-_SEQUENCE_OFFSET = struct.calcsize("<8sI")
-_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 
 
 class FrameSourceError(RuntimeError):
@@ -46,12 +38,11 @@ class FrameSource(Protocol):
 
 
 class SharedMemoryFrameSource:
-    """Attach to a POSIX shared-memory object without creating or unlinking it.
+    """Adapt the nonblocking Phase 6 reader to Phase 5's bounded poll API.
 
-    The camera-service phase owns object creation and unlink.  This consumer
-    opens ``/dev/shm/<name>`` read-only, validates the versioned header, copies
-    pixels once into process-private memory, and closes only its mmap/file
-    handle. Ownership of each returned snapshot transfers to the caller.
+    The reader copies and validates the selected slot. This adapter performs no
+    raw buffer access, closes only its consumer attachment, and reattaches when
+    a camera process recreates the stable segment after restart.
     """
 
     def __init__(
@@ -59,103 +50,81 @@ class SharedMemoryFrameSource:
         name: str,
         *,
         camera_id: str,
-        directory: Path = Path("/dev/shm"),
+        expected_slot_capacity_bytes: int | None = None,
+        metrics: RuntimeMetrics | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        reader: SharedMemoryFrameReader | None = None,
     ) -> None:
-        if not _NAME_PATTERN.fullmatch(name):
-            raise ValueError("shared-memory name contains invalid characters")
-        self.path = directory / name
+        expected_name = shared_memory_name(camera_id)
+        if name != expected_name:
+            raise ValueError(f"shared-memory name must be {expected_name!r} for camera {camera_id!r}")
+        self.name = name
         self.camera_id = camera_id
         self._monotonic = monotonic
         self._sleep = sleep
-        self._file: BinaryIO | None = None
-        self._mapping: mmap.mmap | None = None
-        self._last_sequence = 0
+        self._metrics = metrics
+        self._ever_attached = False
+        self._loss_active = False
+        self._reader = reader or SharedMemoryFrameReader(
+            camera_id,
+            expected_slot_capacity_bytes=expected_slot_capacity_bytes,
+            metrics=metrics,
+        )
+        if self._metrics is not None:
+            self._metrics.set_gauge("input_source_present", False)
 
     @property
     def attached(self) -> bool:
-        return self._mapping is not None
+        return self._reader.attached
 
     def attach(self) -> bool:
-        if self.attached:
-            return True
         try:
-            file = self.path.open("rb", buffering=0)
-        except FileNotFoundError:
-            return False
-        try:
-            size = os.fstat(file.fileno()).st_size
-            if size < SHARED_FRAME_HEADER.size + 1:
-                raise FrameSourceInvalid("shared-memory object is smaller than its header")
-            mapping = mmap.mmap(file.fileno(), length=0, access=mmap.ACCESS_READ)
-        except Exception:
-            file.close()
-            raise
-        self._file = file
-        self._mapping = mapping
-        return True
-
-    def _read_once(self) -> Frame | None:
-        mapping = self._mapping
-        if mapping is None:
-            return None
-        header = SHARED_FRAME_HEADER.unpack_from(mapping, 0)
-        magic, version, sequence, width, height, channels, dtype_code, session_id, frame_number, unix_ns, mono_ns = (
-            header
-        )
-        if magic != SHARED_FRAME_MAGIC or version != SHARED_FRAME_VERSION:
-            raise FrameSourceInvalid("shared-memory magic/version is incompatible")
-        if dtype_code != SHARED_FRAME_DTYPE_UINT8 or width == 0 or height == 0 or channels not in {1, 3, 4}:
-            raise FrameSourceInvalid("shared-memory frame shape or dtype is invalid")
-        payload_size = width * height * channels
-        if SHARED_FRAME_HEADER.size + payload_size > len(mapping):
-            raise FrameSourceInvalid("shared-memory frame exceeds the mapped object")
-        if sequence == 0 or sequence % 2 == 1 or sequence == self._last_sequence:
-            return None
-        pixels = np.frombuffer(
-            mapping,
-            dtype=np.uint8,
-            count=payload_size,
-            offset=SHARED_FRAME_HEADER.size,
-        ).reshape((height, width, channels))
-        copied = np.array(pixels, copy=True)
-        stable_sequence = struct.unpack_from("<Q", mapping, _SEQUENCE_OFFSET)[0]
-        if stable_sequence != sequence or stable_sequence % 2 == 1:
-            return None
-        self._last_sequence = sequence
-        return Frame(copied, self.camera_id, session_id, frame_number, unix_ns, mono_ns)
+            attached = self._reader.attach()
+        except SharedMemoryInvalid as error:
+            raise FrameSourceInvalid(str(error)) from error
+        if self._metrics is not None:
+            self._metrics.set_gauge("input_source_present", attached)
+        if attached:
+            if self._loss_active and self._metrics is not None:
+                self._metrics.increment("shared_memory_reattach_count")
+            self._ever_attached = True
+            self._loss_active = False
+        return attached
 
     def read(self, timeout_seconds: float = 0.250) -> Frame | None:
         if not 0 <= timeout_seconds <= 0.250:
             raise ValueError("frame read timeout must be between zero and 250 ms")
         deadline = self._monotonic() + timeout_seconds
         while True:
-            frame = self._read_once()
-            if frame is not None:
-                return frame
+            try:
+                result = self._reader.read()
+            except SharedMemoryInvalid as error:
+                raise FrameSourceInvalid(str(error)) from error
+            if result.status is ReadStatus.FRAME:
+                assert result.frame is not None
+                return result.frame
+            if result.status is ReadStatus.NOT_ATTACHED:
+                if self._ever_attached and not self._loss_active:
+                    self._loss_active = True
+                    if self._metrics is not None:
+                        self._metrics.increment("shared_memory_disconnects")
+                        self._metrics.set_gauge("input_source_present", False)
+                return None
             remaining = deadline - self._monotonic()
             if remaining <= 0:
                 return None
             self._sleep(min(0.005, remaining))
 
     def close(self) -> None:
-        mapping, file = self._mapping, self._file
-        self._mapping = None
-        self._file = None
-        if mapping is not None:
-            mapping.close()
-        if file is not None:
-            file.close()
+        self._reader.close()
+        if self._metrics is not None:
+            self._metrics.set_gauge("input_source_present", False)
 
 
 __all__ = [
     "FrameSource",
     "FrameSourceError",
     "FrameSourceInvalid",
-    "SHARED_FRAME_DTYPE_UINT8",
-    "SHARED_FRAME_HEADER",
-    "SHARED_FRAME_MAGIC",
-    "SHARED_FRAME_VERSION",
     "SharedMemoryFrameSource",
 ]

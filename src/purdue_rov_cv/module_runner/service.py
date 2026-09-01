@@ -307,15 +307,34 @@ class ModuleRunnerService:
 
     def _frame_ingress(self) -> None:
         next_allowed = 0.0
+        source_seen = False
+        source_loss_logged = False
         try:
             while not self.shutdown.token.is_requested:
                 if self.state_machine.state is ComponentState.ERROR:
                     self.shutdown.token.wait(0.050)
                     continue
                 if not self.frame_source.attached:
+                    if source_seen and not source_loss_logged:
+                        self._log(
+                            "WARNING",
+                            "MODULE_FRAME_SOURCE_LOST",
+                            "camera shared-memory source disappeared; waiting to reattach",
+                            camera_id=self.task.input_camera,
+                        )
+                        source_loss_logged = True
                     if not self.frame_source.attach():
                         self.shutdown.token.wait(self.settings.frame_attach_retry_seconds)
                         continue
+                    if source_loss_logged:
+                        self._log(
+                            "INFO",
+                            "MODULE_FRAME_SOURCE_REATTACHED",
+                            "camera shared-memory source reattached",
+                            camera_id=self.task.input_camera,
+                        )
+                        source_loss_logged = False
+                    source_seen = True
                     self._input_exists.set()
                 frame = self.frame_source.read(0.250)
                 if frame is None:

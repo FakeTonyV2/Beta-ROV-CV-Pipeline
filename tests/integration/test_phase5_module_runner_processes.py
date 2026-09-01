@@ -5,6 +5,7 @@ from __future__ import annotations
 import mmap
 import multiprocessing
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -24,20 +25,22 @@ from purdue_rov.cv.v1 import (
     registration_pb2,
 )
 
+from purdue_rov_cv.camera import CameraService, CapturedFrame
 from purdue_rov_cv.config.loader import load_config
 from purdue_rov_cv.config.models import AppConfig
+from purdue_rov_cv.frame_buffer import (
+    FrameWrite,
+    PixelFormat,
+    SharedMemoryFrameReader,
+    SharedMemoryFrameWriter,
+    shared_memory_name,
+)
 from purdue_rov_cv.messaging.broker import DataBrokerService
 from purdue_rov_cv.messaging.client import ControlClient
 from purdue_rov_cv.messaging.protocol import MODULE_HEARTBEAT, REGISTER_MODULE, REGISTER_MODULE_RESPONSE
 from purdue_rov_cv.messaging.router import ControlRouterService
 from purdue_rov_cv.messaging.sockets import configure_dealer
-from purdue_rov_cv.module_runner.frame_source import (
-    SHARED_FRAME_DTYPE_UINT8,
-    SHARED_FRAME_HEADER,
-    SHARED_FRAME_MAGIC,
-    SHARED_FRAME_VERSION,
-    SharedMemoryFrameSource,
-)
+from purdue_rov_cv.module_runner.frame_source import SharedMemoryFrameSource
 from purdue_rov_cv.module_runner.service import ModuleRunnerService, RunnerSettings
 from purdue_rov_cv.modules.base import Frame
 from purdue_rov_cv.modules.echo import EchoModule
@@ -50,6 +53,11 @@ from purdue_rov_cv.runtime.state import ComponentState
 from purdue_rov_cv.wire.errors import ErrorCode
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "config" / "valid" / "single_camera.yaml"
+SHARED_FRAME_MAGIC = b"PROVCV1\0"
+SHARED_FRAME_VERSION = 1
+SHARED_FRAME_DTYPE_UINT8 = 1
+SHARED_FRAME_HEADER = struct.Struct("<8sIQIIII16sQqq")
+_SEQUENCE_OFFSET = struct.calcsize("<8sI")
 
 
 def _free_tcp_endpoint() -> str:
@@ -127,6 +135,70 @@ class _FrameWriter:
     def close(self) -> None:
         self.mapping.close()
         self.file.close()
+
+
+class _FileFrameSource:
+    """Injectable Phase 5 seam retained for non-Phase-6 process scenarios."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.file = None
+        self.mapping = None
+        self.last_sequence = 0
+
+    @property
+    def attached(self) -> bool:
+        return self.mapping is not None
+
+    def attach(self) -> bool:
+        if self.attached:
+            return True
+        try:
+            self.file = self.path.open("rb", buffering=0)
+        except FileNotFoundError:
+            return False
+        self.mapping = mmap.mmap(self.file.fileno(), length=0, access=mmap.ACCESS_READ)
+        return True
+
+    def read(self, timeout_seconds: float = 0.250) -> Frame | None:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            assert self.mapping is not None
+            values = SHARED_FRAME_HEADER.unpack_from(self.mapping, 0)
+            magic, version, sequence, width, height, channels, dtype_code, session, number, unix_ns, mono_ns = values
+            if (
+                magic == SHARED_FRAME_MAGIC
+                and version == SHARED_FRAME_VERSION
+                and dtype_code == SHARED_FRAME_DTYPE_UINT8
+                and sequence > 0
+                and sequence % 2 == 0
+                and sequence != self.last_sequence
+            ):
+                size = width * height * channels
+                pixels = np.frombuffer(
+                    self.mapping,
+                    dtype=np.uint8,
+                    count=size,
+                    offset=SHARED_FRAME_HEADER.size,
+                ).reshape((height, width, channels))
+                copied = np.array(pixels, copy=True)
+                stable = struct.unpack_from("<Q", self.mapping, _SEQUENCE_OFFSET)[0]
+                if stable == sequence and stable % 2 == 0:
+                    self.last_sequence = stable
+                    return Frame(copied, "front_camera", session, number, unix_ns, mono_ns)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(0.005, remaining))
+
+    def close(self) -> None:
+        mapping, file = self.mapping, self.file
+        self.mapping = None
+        self.file = None
+        if mapping is not None:
+            mapping.close()
+        if file is not None:
+            file.close()
 
 
 class _FailingEcho(EchoModule):
@@ -229,7 +301,7 @@ def _run_runner(
         config,
         task_id,
         module,
-        SharedMemoryFrameSource(name, camera_id="front_camera", directory=directory),
+        _FileFrameSource(directory / name),
         settings=RunnerSettings(
             registration_retry_seconds=0.05,
             registration_ack_timeout_seconds=0.05,
@@ -249,7 +321,7 @@ def _run_unregistered(config: AppConfig, directory: Path, name: str, result) -> 
         config,
         "task_a",
         EchoModule(),
-        SharedMemoryFrameSource(name, camera_id="front_camera", directory=directory),
+        _FileFrameSource(directory / name),
         settings=RunnerSettings(
             registration_retry_seconds=0.02,
             registration_ack_timeout_seconds=0.02,
@@ -263,6 +335,69 @@ def _run_unregistered(config: AppConfig, directory: Path, name: str, result) -> 
     exit_code = service.run()
     result.put((exit_code, time.monotonic() - started))
     raise SystemExit(int(exit_code))
+
+
+def _run_shared_memory_runner(config: AppConfig, identities, camera_id: str = "front_camera") -> None:
+    sequence = PublisherSequence()
+    reader = SharedMemoryFrameReader(camera_id, unregister_from_resource_tracker=False)
+    source = SharedMemoryFrameSource(
+        shared_memory_name(camera_id),
+        camera_id=camera_id,
+        expected_slot_capacity_bytes=config.cameras[camera_id].slot_capacity_bytes,
+        reader=reader,
+    )
+    service = ModuleRunnerService(
+        config,
+        "task_a",
+        EchoModule(),
+        source,
+        settings=RunnerSettings(
+            registration_retry_seconds=0.05,
+            registration_ack_timeout_seconds=0.05,
+            heartbeat_interval_seconds=0.1,
+            control_poll_ms=10,
+        ),
+        publisher_sequence=sequence,
+        install_signals=True,
+    )
+    identities.put((service.session_uuid.bytes, sequence.session_id))
+    raise SystemExit(int(service.run()))
+
+
+class _CameraLoopBackend:
+    def __init__(self) -> None:
+        self.number = 0
+
+    def start(self) -> None:
+        return None
+
+    def poll(self, timeout_seconds: float) -> CapturedFrame:
+        time.sleep(min(timeout_seconds, 0.01))
+        value = self.number % 251
+        self.number += 1
+        return CapturedFrame(
+            bytes([value]) * 18,
+            3,
+            2,
+            9,
+            PixelFormat.BGR8,
+            time.time_ns(),
+            time.monotonic_ns(),
+        )
+
+    def stop(self) -> None:
+        return None
+
+
+def _run_camera_service(camera_id: str, camera_config, session: bytes) -> None:
+    service = CameraService(
+        camera_id,
+        camera_config,
+        _CameraLoopBackend,
+        session_uuid=UUID(bytes=session),
+        install_signals=True,
+    )
+    service.run()
 
 
 def _request(target: str, command: str, *, command_id: bytes | None = None) -> control_pb2.CommandRequest:
@@ -381,6 +516,220 @@ def test_real_runner_control_echo_publication_and_processing_error(tmp_path: Pat
         _stop(router)
         _stop(broker)
         writer.close()
+
+
+def test_real_shared_memory_reader_reaches_phase5_echo_process(tmp_path: Path) -> None:
+    pub, sub, client_endpoint = _free_tcp_endpoint(), _free_tcp_endpoint(), _free_tcp_endpoint()
+    module_endpoint = f"ipc://{tmp_path / 'phase6-control.sock'}"
+    config = _config(pub, sub, client_endpoint, module_endpoint)
+    camera = config.cameras["front_camera"]
+    writer = SharedMemoryFrameWriter(
+        "front_camera",
+        camera.slot_capacity_bytes,
+        UUID(int=750).bytes,
+    )
+    process_context = multiprocessing.get_context("spawn")
+    identities = process_context.Queue()
+    broker_signal_ready = process_context.Event()
+    broker = process_context.Process(target=_run_broker, args=(pub, sub, broker_signal_ready), name="phase6-broker")
+    router = process_context.Process(
+        target=_run_router,
+        args=(client_endpoint, module_endpoint, {"task_a"}),
+        name="phase6-router",
+    )
+    runner = process_context.Process(
+        target=_run_shared_memory_runner,
+        args=(config, identities),
+        name="phase6-module-runner",
+    )
+    context = zmq.Context()
+    subscriber: zmq.Socket[bytes] = context.socket(zmq.SUB)
+    subscriber.setsockopt(zmq.LINGER, 0)
+    subscriber.setsockopt(zmq.SUBSCRIBE, b"cv.result.task_a.front_camera")
+    subscriber.connect(sub)
+    client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
+    replacement: SharedMemoryFrameWriter | None = None
+    try:
+        writer.open()
+        pixels = np.arange(18, dtype=np.uint8).reshape((2, 3, 3))
+        writer.write(
+            FrameWrite(
+                pixels.tobytes(),
+                3,
+                2,
+                9,
+                PixelFormat.BGR8,
+                0,
+                time.time_ns(),
+                time.monotonic_ns(),
+            )
+        )
+        broker.start()
+        _await_process_ready(broker, broker_signal_ready)
+        router.start()
+        runner.start()
+        identities.get(timeout=5.0)
+        _wait_state(client, "task_a", ComponentState.READY)
+        started = client.execute_command(_request("task_a", "start"))
+        assert started.resulting_state == ComponentState.RUNNING
+        received = None
+        deadline = time.monotonic() + 5.0
+        frame_number = 1
+        while received is None and time.monotonic() < deadline:
+            writer.write(
+                FrameWrite(
+                    pixels.tobytes(),
+                    3,
+                    2,
+                    9,
+                    PixelFormat.BGR8,
+                    frame_number,
+                    time.time_ns(),
+                    time.monotonic_ns(),
+                )
+            )
+            frame_number += 1
+            if subscriber.poll(100, zmq.POLLIN):
+                received = subscriber.recv_multipart()
+        assert received is not None
+        envelope = envelope_pb2.MessageEnvelope.FromString(received[1])
+        assert envelope.camera_session_id == UUID(int=750).bytes
+        assert envelope.frame_number >= 0
+
+        writer.close()
+        time.sleep(0.1)
+        _wait_state(client, "task_a", ComponentState.RUNNING)
+        replacement = SharedMemoryFrameWriter(
+            "front_camera",
+            camera.slot_capacity_bytes,
+            UUID(int=751).bytes,
+        )
+        replacement.open()
+        replacement.write(
+            FrameWrite(
+                bytes([33]) * 18,
+                3,
+                2,
+                9,
+                PixelFormat.BGR8,
+                0,
+                time.time_ns(),
+                time.monotonic_ns(),
+            )
+        )
+        replacement_received = None
+        deadline = time.monotonic() + 5.0
+        replacement_number = 1
+        while replacement_received is None and time.monotonic() < deadline:
+            replacement.write(
+                FrameWrite(
+                    bytes([33]) * 18,
+                    3,
+                    2,
+                    9,
+                    PixelFormat.BGR8,
+                    replacement_number,
+                    time.time_ns(),
+                    time.monotonic_ns(),
+                )
+            )
+            replacement_number += 1
+            if subscriber.poll(100, zmq.POLLIN):
+                candidate = subscriber.recv_multipart()
+                candidate_envelope = envelope_pb2.MessageEnvelope.FromString(candidate[1])
+                if candidate_envelope.camera_session_id == UUID(int=751).bytes:
+                    replacement_received = candidate_envelope
+        assert replacement_received is not None
+        assert replacement_received.frame_number >= 0
+        _wait_state(client, "task_a", ComponentState.RUNNING)
+    finally:
+        client.close()
+        subscriber.close(linger=0)
+        context.term()
+        _stop(runner)
+        _stop(router)
+        _stop(broker)
+        writer.close()
+        if replacement is not None:
+            replacement.close()
+
+
+def test_camera_a_crash_does_not_stop_camera_b_broker_router_or_module(tmp_path: Path) -> None:
+    pub, sub, client_endpoint = _free_tcp_endpoint(), _free_tcp_endpoint(), _free_tcp_endpoint()
+    module_endpoint = f"ipc://{tmp_path / 'isolation-control.sock'}"
+    config = _config(pub, sub, client_endpoint, module_endpoint)
+    base_camera = config.cameras["front_camera"].model_copy(update={"width": 3, "height": 2, "slot_capacity_bytes": 64})
+    task = config.tasks["task_a"].model_copy(
+        update={"input_camera": "camera_b", "publish_topic": "cv.result.task_a.camera_b"}
+    )
+    config = config.model_copy(
+        update={"cameras": {"camera_a": base_camera, "camera_b": base_camera}, "tasks": {"task_a": task}}
+    )
+    process_context = multiprocessing.get_context("spawn")
+    identities = process_context.Queue()
+    broker_signal_ready = process_context.Event()
+    broker = process_context.Process(target=_run_broker, args=(pub, sub, broker_signal_ready), name="isolation-broker")
+    router = process_context.Process(
+        target=_run_router,
+        args=(client_endpoint, module_endpoint, {"task_a"}),
+        name="isolation-router",
+    )
+    runner = process_context.Process(
+        target=_run_shared_memory_runner,
+        args=(config, identities, "camera_b"),
+        name="isolation-module",
+    )
+    camera_a = process_context.Process(
+        target=_run_camera_service,
+        args=("camera_a", base_camera, uuid4().bytes),
+        name="isolation-camera-a",
+    )
+    camera_b = process_context.Process(
+        target=_run_camera_service,
+        args=("camera_b", base_camera, uuid4().bytes),
+        name="isolation-camera-b",
+    )
+    client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
+    cleanup_a: SharedMemoryFrameWriter | None = None
+    try:
+        broker.start()
+        _await_process_ready(broker, broker_signal_ready)
+        router.start()
+        runner.start()
+        identities.get(timeout=5.0)
+        deadline = time.monotonic() + 5.0
+        starting = None
+        while time.monotonic() < deadline:
+            starting = client.send_command(_request("task_a", "get_status"))
+            if starting.status == control_pb2.COMMAND_STATUS_COMPLETED:
+                break
+            time.sleep(0.02)
+        assert starting is not None and starting.resulting_state == ComponentState.STARTING
+        camera_a.start()
+        camera_b.start()
+        _wait_state(client, "task_a", ComponentState.READY)
+        assert client.execute_command(_request("task_a", "start")).resulting_state == ComponentState.RUNNING
+        camera_a.kill()
+        camera_a.join(5.0)
+        assert camera_a.exitcode is not None and camera_a.exitcode != 0
+        assert camera_b.is_alive()
+        assert broker.is_alive()
+        assert router.is_alive()
+        assert runner.is_alive()
+        _wait_state(client, "task_a", ComponentState.RUNNING)
+        cleanup_a = SharedMemoryFrameWriter("camera_a", 64, uuid4().bytes)
+        cleanup_a.open()
+    finally:
+        client.close()
+        if cleanup_a is not None:
+            cleanup_a.close()
+        if camera_a.is_alive():
+            camera_a.kill()
+            camera_a.join(2.0)
+        _stop(camera_b)
+        _stop(runner)
+        _stop(router)
+        _stop(broker)
 
 
 def test_real_process_registration_failure_and_hung_worker_exit_75(tmp_path: Path) -> None:

@@ -1,4 +1,6 @@
 #requirements.in
+# PyGObject/GStreamer are intentionally installed from Ubuntu packages by
+# scripts/setup_system_deps.sh and exposed with venv --system-site-packages.
 pyzmq>=26.0,<28.0
 protobuf>=4.25.0
 pydantic>=2.0,<3.0

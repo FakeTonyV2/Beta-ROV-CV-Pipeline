@@ -3,7 +3,10 @@ set -euo pipefail
 
 echo "=== Creating Virtual Environment ==="
 command -v python3.12 >/dev/null || { echo "error: Python 3.12 is required" >&2; exit 1; }
-python3.12 -m venv .venv
+# PyGObject and its GStreamer overrides are intentionally supplied by the
+# matching Ubuntu system packages. Expose those ABI-matched packages inside
+# the otherwise isolated project environment.
+python3.12 -m venv --system-site-packages .venv
 
 echo "=== Upgrading Core Tooling ==="
 ./.venv/bin/python -m pip install --upgrade pip setuptools wheel

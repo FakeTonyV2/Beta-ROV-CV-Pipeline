@@ -9,32 +9,27 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install system dependencies
+      - name: Install Ubuntu 24.04 system and Python dependencies
+        env:
+          ALLOW_NON_REFERENCE_PLATFORM: "1"
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gstreamer1.0-tools protobuf-compiler
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --requirement requirements.lock
-          python -m pip install --editable .
+          ./scripts/setup_system_deps.sh
+          ./scripts/setup_venv.sh
       - name: Verify imports and dependencies
         run: |
-          python scripts/smoke_imports.py
-          python scripts/verify_dependencies.py
+          .venv/bin/python scripts/smoke_imports.py
+          .venv/bin/python scripts/verify_dependencies.py
       - name: Verify protobuf generation is reproducible
         run: |
-          bash scripts/generate_proto.sh
+          PATH="$PWD/.venv/bin:$PATH" bash scripts/generate_proto.sh
           git diff --exit-code -- generated/python
       - name: Check runtime and messaging types
-        run: python -m mypy
+        run: .venv/bin/python -m mypy
       - name: Lint and check formatting
         run: |
-          python -m ruff check src tests
-          python -m ruff format --check src tests
+          .venv/bin/python -m ruff check src tests
+          .venv/bin/python -m ruff format --check src tests
       - name: Run tests
         run: |
-          python -m pytest --cov=purdue_rov_cv --cov-report=term-missing --cov-fail-under=80
-          python -m coverage report --include='*/purdue_rov_cv/modules/*' --fail-under=70
+          .venv/bin/python -m pytest --cov=purdue_rov_cv --cov-report=term-missing --cov-fail-under=80
+          .venv/bin/python -m coverage report --include='*/purdue_rov_cv/modules/*' --fail-under=70

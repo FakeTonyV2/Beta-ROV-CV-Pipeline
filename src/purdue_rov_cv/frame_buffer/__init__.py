@@ -1,0 +1,51 @@
+"""Canonical Phase 6 shared-memory frame contract."""
+
+from .buffer import (
+    FrameReadResult,
+    FrameWrite,
+    LiveOwnerError,
+    ReadStatus,
+    SharedMemoryFrameReader,
+    SharedMemoryFrameWriter,
+    UnsafeStaleSegmentError,
+    process_exists,
+)
+from .header import (
+    HEADER_SIZE,
+    HEADER_STRUCT,
+    HEADER_VERSION,
+    MAGIC,
+    SLOT_COUNT,
+    FrameHeader,
+    PixelFormat,
+    SharedMemoryInvalid,
+    bytes_per_pixel,
+    segment_size,
+    shared_memory_name,
+    slot_end,
+    slot_start,
+)
+
+__all__ = [
+    "FrameHeader",
+    "FrameReadResult",
+    "FrameWrite",
+    "HEADER_SIZE",
+    "HEADER_STRUCT",
+    "HEADER_VERSION",
+    "LiveOwnerError",
+    "MAGIC",
+    "PixelFormat",
+    "ReadStatus",
+    "SLOT_COUNT",
+    "SharedMemoryFrameReader",
+    "SharedMemoryFrameWriter",
+    "SharedMemoryInvalid",
+    "UnsafeStaleSegmentError",
+    "bytes_per_pixel",
+    "process_exists",
+    "segment_size",
+    "shared_memory_name",
+    "slot_end",
+    "slot_start",
+]

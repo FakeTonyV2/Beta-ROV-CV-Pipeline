@@ -279,6 +279,22 @@ def _validate_payload(payload: Message, envelope: envelope_pb2.MessageEnvelope) 
             )
     elif isinstance(payload, frame_index_pb2.FrameIndex):
         errors.extend(_validate_common_camera_payload(payload, envelope))
+        if payload.capture_time_unix_ns <= 0 or payload.capture_monotonic_ns <= 0:
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE,
+                    "FrameIndex capture clocks must be positive",
+                    "frame_index.capture_time",
+                )
+            )
+        if not 96 <= payload.rtp_payload_type <= 127:
+            errors.append(
+                _error(
+                    ErrorCode.INVALID_ENVELOPE,
+                    "FrameIndex rtp_payload_type must be dynamic [96, 127]",
+                    "frame_index.rtp_payload_type",
+                )
+            )
     elif isinstance(payload, diagnostics_pb2.DiagnosticStatus):
         if not payload.source_id or payload.source_id != envelope.source_id:
             errors.append(_error(ErrorCode.INVALID_ENVELOPE, "payload and envelope source_id differ", "source_id"))

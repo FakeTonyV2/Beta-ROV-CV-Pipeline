@@ -4,7 +4,10 @@ The repository includes the Phase 1–3 wire, configuration, and runtime contrac
 Phase 4's real ZeroMQ data broker and control router, and Phase 5's isolated
 production module runner and Echo reference task.
 It also includes Phase 6's simulated GStreamer camera service and canonical
-lock-free shared-memory triple buffer.
+lock-free shared-memory triple buffer, plus Phase 7's per-camera surface RTP
+receiver, validated `FrameIndex` subscriber, and bounded frame-correlation
+fan-out. Surface-enabled camera services use the same source-boundary identity
+for shared memory, H.264/RTP, and brokered `FrameIndex` messages.
 
 Reference platforms:
 
@@ -66,6 +69,7 @@ Run all tests, or the Phase 4/5 process integrations specifically, with:
 .venv/bin/python -m pytest tests/integration/test_phase4_processes.py
 .venv/bin/python -m pytest tests/integration/test_phase5_module_runner_processes.py
 .venv/bin/python -m pytest tests/integration/test_phase6_processes.py
+.venv/bin/python -m pytest tests/integration/test_phase7_gstreamer.py
 ```
 
 The installed service entry points load the mission configuration and
@@ -76,6 +80,7 @@ purdue-cv-broker --config config/mission.yaml
 purdue-cv-control-router --config config/mission.yaml
 purdue-cv-module-runner --task gate_detection --config config/mission.yaml
 purdue-cv-camera --camera front_camera --config config/mission.yaml
+purdue-cv-video-receiver --camera front_camera --config config/mission.yaml
 ```
 
 See [docs/broker-control-routing.md](docs/broker-control-routing.md) for control
@@ -85,6 +90,9 @@ threading, publication, watchdog, and shutdown contracts.
 See [docs/shared-memory-frame-buffer.md](docs/shared-memory-frame-buffer.md) for
 the exact 128-byte header, ownership/recovery policy, and simulated camera
 lifecycle.
+See [docs/surface-video-receiver.md](docs/surface-video-receiver.md) for the
+RTP identity, correlation, rebuild, fan-out, metrics, and deferred-recorder
+contracts.
 
 Before a mission, run the Pi preflight with the deployed camera paths, for example:
 

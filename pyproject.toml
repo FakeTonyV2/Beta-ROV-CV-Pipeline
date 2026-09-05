@@ -19,6 +19,7 @@ purdue-cv-broker = "purdue_rov_cv.messaging.entrypoints:broker_entrypoint"
 purdue-cv-control-router = "purdue_rov_cv.messaging.entrypoints:control_router_entrypoint"
 purdue-cv-module-runner = "purdue_rov_cv.module_runner.entrypoints:module_runner_entrypoint"
 purdue-cv-camera = "purdue_rov_cv.camera.entrypoints:camera_entrypoint"
+purdue-cv-video-receiver = "purdue_rov_cv.video.entrypoints:video_receiver_entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src", "generated/python"]
@@ -37,6 +38,7 @@ files = [
   "src/purdue_rov_cv/modules",
   "src/purdue_rov_cv/frame_buffer",
   "src/purdue_rov_cv/camera",
+  "src/purdue_rov_cv/video",
   "src/purdue_rov_cv/cli.py",
 ]
 explicit_package_bases = true

@@ -7,6 +7,13 @@ per configured camera. The simulated backend uses a live GStreamer
 timestamps before color conversion. Rebuild and shutdown transition the owned
 pipeline to `NULL` and remove the probe.
 
+When `stream_to_surface` is enabled, that same source probe assigns the
+canonical frame number before a tee. The raw branch writes the assigned number
+to shared memory while the bounded encoded branch sends H.264/RTP and publishes
+the corresponding `FrameIndex`. A dropped raw appsink frame may therefore
+produce a legitimate gap in shared-memory frame numbers; numbers never move
+backward or reset during an in-process pipeline rebuild.
+
 The production service command is:
 
 ```text

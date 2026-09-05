@@ -95,7 +95,12 @@ def _payload_and_topic(payload_type: str):
     if payload_type == "frame_index_v1":
         return (
             frame_index_pb2.FrameIndex(
-                camera_id="front", camera_session_id=CAMERA_SESSION, frame_number=7, capture_time_unix_ns=12
+                camera_id="front",
+                camera_session_id=CAMERA_SESSION,
+                frame_number=7,
+                capture_time_unix_ns=12,
+                capture_monotonic_ns=11,
+                rtp_payload_type=96,
             ),
             "cv.frame_index.front",
         )
@@ -155,6 +160,20 @@ def test_every_registered_payload_dispatches_and_validates(payload_type):
 
     assert result.valid, result.errors
     assert isinstance(result.payload, type(payload))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("capture_time_unix_ns", 0), ("capture_monotonic_ns", 0), ("rtp_payload_type", 95)],
+)
+def test_frame_index_requires_capture_clocks_and_dynamic_payload_type(field, value):
+    envelope, topic, payload = _envelope("frame_index_v1")
+    setattr(payload, field, value)
+    if field == "capture_time_unix_ns":
+        envelope.capture_time_unix_ns = value
+    envelope.payload = payload.SerializeToString()
+    envelope.payload_size_bytes = len(envelope.payload)
+    assert not validate_envelope(envelope, topic).valid
 
 
 def test_payload_registry_exactly_covers_data_plane_payloads():

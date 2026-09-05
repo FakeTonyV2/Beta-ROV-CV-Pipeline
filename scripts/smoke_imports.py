@@ -25,6 +25,7 @@ MODULES = (
     "purdue_rov_cv.module_runner",
     "purdue_rov_cv.modules",
     "purdue_rov_cv.runtime",
+    "purdue_rov_cv.video",
 )
 
 
@@ -34,7 +35,9 @@ def main() -> None:
         print(f"ok: {name}")
     gi = import_module("gi")
     gi.require_version("Gst", "1.0")
+    gi.require_version("GstRtp", "1.0")
     gst = import_module("gi.repository.Gst")
+    import_module("gi.repository.GstRtp")
     gst.init(None)
     print(f"ok: gi.repository.Gst ({gst.version_string()})")
 

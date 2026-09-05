@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
 
 import pytest
@@ -14,12 +15,14 @@ from purdue_rov_cv.camera import (
     CapturedFrame,
     GStreamerCaptureBackend,
     RetryController,
+    SurfaceRtpStream,
 )
 from purdue_rov_cv.camera.entrypoints import camera_entrypoint
 from purdue_rov_cv.config.models import CameraAdapter, CameraConfig, CameraFormat, CameraPathKind
 from purdue_rov_cv.frame_buffer import PixelFormat, SharedMemoryFrameWriter
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
+from purdue_rov_cv.runtime.shutdown import ShutdownToken
 from purdue_rov_cv.runtime.state import ComponentState
 
 
@@ -126,6 +129,91 @@ def test_gstreamer_pipeline_has_explicit_caps_and_bounded_dropping_appsink() -> 
     assert "format=BGR" in description
     assert "appsink" in description
     assert "max-buffers=1 drop=true" in description
+
+    session = uuid4().bytes
+    streamed = GStreamerCaptureBackend(
+        640,
+        480,
+        30,
+        surface_stream=SurfaceRtpStream(
+            "front_camera",
+            session,
+            "192.0.2.1",
+            5000,
+            96,
+            1234,
+            lambda _value: None,
+        ),
+    ).pipeline_description()
+    assert "tee name=capture_tee" in streamed
+    assert "x264enc name=encoder" in streamed
+    assert "rtph264pay name=pay" in streamed
+    assert "pt=96 ssrc=1234" in streamed
+    assert "udpsink host=192.0.2.1 port=5000" in streamed
+
+
+def test_camera_accepts_source_assigned_frame_numbers_and_rejects_reuse() -> None:
+    clock = _Clock()
+    first = CapturedFrame(
+        bytes(36),
+        4,
+        3,
+        12,
+        PixelFormat.BGR8,
+        1_000,
+        clock.monotonic_ns(),
+        5,
+    )
+    stale = CapturedFrame(
+        bytes(36),
+        4,
+        3,
+        12,
+        PixelFormat.BGR8,
+        1_001,
+        clock.monotonic_ns(),
+        5,
+    )
+    service = _service(clock, [_Backend([first, stale])])
+    try:
+        service.initialize()
+        service.step()
+        service.step()
+        assert service.next_frame_number == 6
+        assert service.metrics.snapshot().values["shared_memory_write_count"] == 1
+    finally:
+        service.close()
+
+
+class _Publisher:
+    def __init__(self) -> None:
+        self.ready = Event()
+        self.shutdown = ShutdownToken()
+        self.stopped = False
+
+    def run(self) -> None:
+        self.ready.set()
+        self.shutdown.wait(5.0)
+        self.stopped = True
+
+
+def test_camera_service_owns_frame_index_publisher_lifecycle() -> None:
+    clock = _Clock()
+    publisher = _Publisher()
+    service = CameraService(
+        f"camera_{uuid4().hex}",
+        _config(),
+        lambda: _Backend([]),
+        metrics=RuntimeMetrics(monotonic=clock.monotonic),
+        monotonic=clock.monotonic,
+        monotonic_ns=clock.monotonic_ns,
+        frame_index_publisher=publisher,
+    )
+    service.initialize()
+    assert publisher.ready.is_set()
+    result = service.close()
+    assert result.completed and not result.failures
+    assert publisher.stopped
 
 
 def test_first_frame_runs_and_rebuild_preserves_session_and_numbering() -> None:

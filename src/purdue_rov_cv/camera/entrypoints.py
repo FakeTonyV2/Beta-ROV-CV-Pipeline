@@ -10,12 +10,17 @@ from uuid import uuid4
 
 from purdue_rov_cv.config.issues import ConfigurationError
 from purdue_rov_cv.config.loader import load_config
+from purdue_rov_cv.config.ports import derive_stream_allocation
 from purdue_rov_cv.frame_buffer import LiveOwnerError, SharedMemoryInvalid, UnsafeStaleSegmentError
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.json_logging import configure_json_logger
+from purdue_rov_cv.runtime.metrics import RuntimeMetrics
+from purdue_rov_cv.runtime.shutdown import ShutdownToken
+from purdue_rov_cv.video.mapping import RtpFrameIndexMapper
+from purdue_rov_cv.video.sender import FrameIndexPublisher
 from purdue_rov_cv.wire.errors import ErrorCode
 
-from .backend import GStreamerCaptureBackend
+from .backend import GStreamerCaptureBackend, SurfaceRtpStream
 from .service import CameraService
 
 
@@ -45,13 +50,55 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
         source_id=args.camera,
         publisher_session_id=session,
     )
+    metrics = RuntimeMetrics()
+    publisher = None
+    mapper = None
+    if camera.stream_to_surface:
+        allocation = derive_stream_allocation(args.camera, camera.stream_index)
+        publisher = FrameIndexPublisher(
+            config.messaging.broker.publisher_endpoint,
+            args.camera,
+            metrics=metrics,
+            shutdown=ShutdownToken(),
+        )
+        mapper = RtpFrameIndexMapper(args.camera, session.bytes)
+
+        def streaming_backend_factory() -> GStreamerCaptureBackend:
+            assert publisher is not None and mapper is not None
+            return GStreamerCaptureBackend(
+                camera.width,
+                camera.height,
+                camera.frame_rate,
+                surface_stream=SurfaceRtpStream(
+                    args.camera,
+                    session.bytes,
+                    str(config.network.surface_ip),
+                    allocation.rtp_port,
+                    allocation.rtp_payload_type,
+                    int.from_bytes(session.bytes[:4], byteorder="big"),
+                    publisher.publish,
+                    mapper=mapper,
+                ),
+            )
+
+        backend_factory = streaming_backend_factory
+
+    else:
+
+        def local_backend_factory() -> GStreamerCaptureBackend:
+            return GStreamerCaptureBackend(camera.width, camera.height, camera.frame_rate)
+
+        backend_factory = local_backend_factory
+
     service = CameraService(
         args.camera,
         camera,
-        lambda: GStreamerCaptureBackend(camera.width, camera.height, camera.frame_rate),
+        backend_factory,
         session_uuid=session,
+        metrics=metrics,
         logger=logger,
         install_signals=True,
+        frame_index_publisher=publisher,
     )
     service.run()
     return ExitCode.CLEAN_SHUTDOWN

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from threading import Event, Thread
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from purdue_rov_cv.config.models import CameraConfig
@@ -11,7 +13,7 @@ from purdue_rov_cv.frame_buffer import FrameWrite, SharedMemoryFrameWriter
 from purdue_rov_cv.runtime.json_logging import StructuredJsonLogger
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.runtime.rate_limit import WarningRateLimiter
-from purdue_rov_cv.runtime.shutdown import ShutdownCoordinator, ShutdownResult, install_signal_handlers
+from purdue_rov_cv.runtime.shutdown import ShutdownCoordinator, ShutdownResult, ShutdownToken, install_signal_handlers
 from purdue_rov_cv.runtime.state import ComponentState, ComponentStateMachine
 
 from .backend import CaptureBackend, CaptureBackendError, CapturedFrame
@@ -21,6 +23,13 @@ POLL_SECONDS = 0.100
 RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0, 4.0, 5.0)
 
 BackendFactory = Callable[[], CaptureBackend]
+
+
+class FrameIndexBackgroundPublisher(Protocol):
+    ready: Event
+    shutdown: ShutdownToken
+
+    def run(self) -> None: ...
 
 
 class RetryController:
@@ -52,6 +61,7 @@ class CameraService:
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
         install_signals: bool = False,
         writer_factory: Callable[..., SharedMemoryFrameWriter] = SharedMemoryFrameWriter,
+        frame_index_publisher: FrameIndexBackgroundPublisher | None = None,
     ) -> None:
         self.camera_id = camera_id
         self.config = config
@@ -64,6 +74,8 @@ class CameraService:
         self.state_machine = ComponentStateMachine(observer=self._observe_state)
         self.metrics.set_metadata("state", ComponentState.STARTING.value)
         self.shutdown = ShutdownCoordinator(state_machine=self.state_machine, monotonic=monotonic)
+        self.frame_index_publisher = frame_index_publisher
+        self._frame_index_thread: Thread | None = None
         self.writer = writer_factory(
             camera_id,
             config.slot_capacity_bytes,
@@ -71,7 +83,9 @@ class CameraService:
             metrics=self.metrics,
         )
         self.shutdown.register("capture-backend", self._shutdown_backend, order=10)
-        self.shutdown.register("shared-memory-writer", self._shutdown_writer, order=20)
+        if frame_index_publisher is not None:
+            self.shutdown.register("frame-index-publisher", self._shutdown_frame_index_publisher, order=20)
+        self.shutdown.register("shared-memory-writer", self._shutdown_writer, order=30)
         self._backend: CaptureBackend | None = None
         self._retry = RetryController()
         self._warning_limiter = WarningRateLimiter(interval_seconds=5.0, monotonic=monotonic)
@@ -159,6 +173,15 @@ class CameraService:
         self.metrics.set_gauge("usb_device_present", False)
         self.metrics.set_metadata("current_pixel_format", "BGR8")
         self._initialized = True
+        if self.frame_index_publisher is not None:
+            self._frame_index_thread = Thread(
+                target=self.frame_index_publisher.run,
+                name=f"frame-index-publisher:{self.camera_id}",
+                daemon=True,
+            )
+            self._frame_index_thread.start()
+            if not self.frame_index_publisher.ready.wait(1.0):
+                raise CaptureBackendError("FrameIndex publisher did not initialize within one second")
         self._start_backend(rebuild=False)
 
     def _lose_backend(self, error: BaseException, *, timed_out: bool) -> None:
@@ -180,7 +203,15 @@ class CameraService:
         self._schedule_retry(error)
 
     def _accept(self, captured: CapturedFrame) -> bool:
-        frame_number = self._next_frame_number
+        frame_number = self._next_frame_number if captured.frame_number is None else captured.frame_number
+        if frame_number < self._next_frame_number:
+            self._log(
+                "ERROR",
+                "CAMERA_FRAME_REJECTED",
+                "source frame number moved backward",
+                frame_number=frame_number,
+            )
+            return False
         try:
             self.writer.write(
                 FrameWrite(
@@ -197,7 +228,7 @@ class CameraService:
         except (TypeError, ValueError) as error:
             self._log("ERROR", "CAMERA_FRAME_REJECTED", str(error), frame_number=frame_number)
             return False
-        self._next_frame_number += 1
+        self._next_frame_number = frame_number + 1
         self._last_accepted_ns = self._monotonic_ns()
         self.metrics.increment("frames_received")
         self.metrics.set_gauge("current_width", captured.width)
@@ -251,6 +282,16 @@ class CameraService:
     def _shutdown_writer(self) -> None:
         self.writer.close(unlink=True)
 
+    def _shutdown_frame_index_publisher(self) -> None:
+        publisher = self.frame_index_publisher
+        thread = self._frame_index_thread
+        if publisher is None or thread is None:
+            return
+        publisher.shutdown.request("camera service shutdown")
+        thread.join(1.0)
+        if thread.is_alive():
+            raise CaptureBackendError("FrameIndex publisher did not stop within one second")
+
     def close(self) -> ShutdownResult:
         if self.state_machine.state not in {ComponentState.STOPPING, ComponentState.STOPPED}:
             self.shutdown.request("camera service close")
@@ -280,5 +321,6 @@ __all__ = [
     "RETRY_DELAYS_SECONDS",
     "BackendFactory",
     "CameraService",
+    "FrameIndexBackgroundPublisher",
     "RetryController",
 ]

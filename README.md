@@ -9,6 +9,10 @@ receiver, validated `FrameIndex` subscriber, and bounded frame-correlation
 fan-out. Surface-enabled camera services use the same source-boundary identity
 for shared memory, H.264/RTP, and brokered `FrameIndex` messages.
 
+Phase 8 adds the production `purdue-cv-recorder`, indexed zstd MCAP recording
+and replay, encoded-before-decode Matroska segmentation, disk protection, and
+dedicated replay-broker defaults. See [recording and replay](docs/recording-replay.md).
+
 Reference platforms:
 
 - Raspberry Pi 5: ARM64, Ubuntu Server 24.04 LTS, Python 3.12.x, systemd, tethered Ethernet, GStreamer >= 1.22, active cooling.
@@ -93,6 +97,8 @@ lifecycle.
 See [docs/surface-video-receiver.md](docs/surface-video-receiver.md) for the
 RTP identity, correlation, rebuild, fan-out, metrics, and deferred-recorder
 contracts.
+See [docs/transport-resilience.md](docs/transport-resilience.md) for the isolated
+Phase 7.5 tc/netem, slow-consumer, evidence, cleanup, and coverage gates.
 
 Before a mission, run the Pi preflight with the deployed camera paths, for example:
 

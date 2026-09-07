@@ -13,7 +13,7 @@ from .models import (
     ResolvedFrameIdentity,
 )
 from .sender import FrameIndexPublisher, GStreamerRtpSender
-from .service import ReceiverCallbacks, VideoReceiverService
+from .service import EncodedRecorder, ReceiverCallbacks, VideoReceiverService
 from .subscriber import FrameIndexSubscriber, configure_frame_index_subscriber
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "CorrelationQuality",
     "DecodedVideoFrame",
     "EncodedAccessUnit",
+    "EncodedRecorder",
     "FrameCorrelation",
     "FrameCorrelator",
     "FrameIndexCache",

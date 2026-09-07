@@ -31,6 +31,7 @@ from purdue_rov_cv.video import (
     configure_frame_index_subscriber,
 )
 from purdue_rov_cv.video.mapping import RtpFrameIndexMapper
+from purdue_rov_cv.video.models import EncodedAccessUnit
 
 
 class _Clock:
@@ -441,6 +442,61 @@ def test_receiver_timeout_rebuild_and_five_consecutive_frame_recovery() -> None:
     assert service.state_machine.state is ComponentState.STOPPED
 
 
+def test_video_recording_failure_stays_degraded_while_display_recovers() -> None:
+    clock = _Clock()
+    backends: list[_Backend] = []
+
+    class RejectingRecorder:
+        stopped = False
+
+        def start(self) -> None:
+            pass
+
+        def push(self, _unit: EncodedAccessUnit) -> bool:
+            return False
+
+        def check_bus(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    recorder = RejectingRecorder()
+
+    def factory(callbacks: ReceiverCallbacks) -> _Backend:
+        backend = _Backend(callbacks)
+        backends.append(backend)
+        return backend
+
+    service = VideoReceiverService(
+        "front_camera",
+        _camera(),
+        "tcp://127.0.0.1:65441",
+        "tcp://127.0.0.1:65442",
+        health_interval_ms=1_000,
+        backend_factory=factory,
+        metrics=RuntimeMetrics(monotonic=clock.monotonic),
+        monotonic=clock.monotonic,
+        monotonic_ns=clock.monotonic_ns,
+        encoded_recorder=recorder,
+    )
+    try:
+        service.initialize()
+        backends[0].callbacks.on_decoded(_frame(received_ns=clock.monotonic_ns()))
+        assert service.state_machine.state is ComponentState.RUNNING
+        backends[0].callbacks.on_encoded(EncodedAccessUnit(b"encoded", 1, False))
+        assert service.recording_failed
+        assert service.state_machine.state is ComponentState.DEGRADED
+        service.step()
+        assert recorder.stopped
+        for _ in range(10):
+            backends[0].callbacks.on_decoded(_frame(received_ns=clock.monotonic_ns()))
+        assert service.state_machine.state is ComponentState.DEGRADED
+        assert service.metrics.snapshot().values["last_error_code"] == "INTERNAL_ERROR"
+    finally:
+        service.close()
+
+
 def test_receiver_detects_unexpected_subscriber_exit() -> None:
     service = VideoReceiverService(
         "front_camera",
@@ -482,5 +538,6 @@ def test_receiver_pipeline_contract_is_bounded_and_canonical() -> None:
     assert "rtpjitterbuffer" in description
     assert "latency=50 drop-on-latency=true do-lost=true" in description
     assert "rtph264depay" in description and "h264parse" in description and "tee" in description
+    assert "video/x-h264,stream-format=byte-stream,alignment=au" in description
     assert "max-size-buffers=1" in description and "leaky=downstream" in description
     assert "max-buffers=1 drop=true sync=false" in description

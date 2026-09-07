@@ -20,6 +20,10 @@ purdue-cv-control-router = "purdue_rov_cv.messaging.entrypoints:control_router_e
 purdue-cv-module-runner = "purdue_rov_cv.module_runner.entrypoints:module_runner_entrypoint"
 purdue-cv-camera = "purdue_rov_cv.camera.entrypoints:camera_entrypoint"
 purdue-cv-video-receiver = "purdue_rov_cv.video.entrypoints:video_receiver_entrypoint"
+purdue-cv-recorder = "purdue_rov_cv.recording.entrypoints:recorder_entrypoint"
+purdue-cv-replay = "purdue_rov_cv.replay.entrypoints:replay_entrypoint"
+purdue-cv-replay-broker = "purdue_rov_cv.replay.entrypoints:replay_broker_entrypoint"
+purdue-cv-video-replay = "purdue_rov_cv.replay.entrypoints:video_replay_entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src", "generated/python"]
@@ -27,6 +31,17 @@ where = ["src", "generated/python"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+  "transport: real Linux transport impairment or sustained backpressure acceptance",
+  "requires_net_admin: requires isolated network namespaces and CAP_NET_ADMIN/root",
+]
+
+[tool.coverage.run]
+source = ["purdue_rov_cv"]
+omit = ["generated/*", "*/generated/*"]
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.mypy]
 python_version = "3.12"
@@ -39,6 +54,8 @@ files = [
   "src/purdue_rov_cv/frame_buffer",
   "src/purdue_rov_cv/camera",
   "src/purdue_rov_cv/video",
+  "src/purdue_rov_cv/recording",
+  "src/purdue_rov_cv/replay",
   "src/purdue_rov_cv/cli.py",
 ]
 explicit_package_bases = true
@@ -51,6 +68,11 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = ["google.protobuf.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mcap", "mcap.*", "mcap_protobuf", "mcap_protobuf.*", "psutil"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
 module = ["purdue_rov.cv.v1.*"]

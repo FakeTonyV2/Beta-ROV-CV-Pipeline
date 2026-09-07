@@ -27,9 +27,10 @@ jobs:
         run: .venv/bin/python -m mypy
       - name: Lint and check formatting
         run: |
-          .venv/bin/python -m ruff check src tests
-          .venv/bin/python -m ruff format --check src tests
+          .venv/bin/python -m ruff check src tests scripts/check_coverage.py scripts/summarize_transport_reports.py
+          .venv/bin/python -m ruff format --check src tests scripts/check_coverage.py scripts/summarize_transport_reports.py
       - name: Run tests
         run: |
-          .venv/bin/python -m pytest --cov=purdue_rov_cv --cov-report=term-missing --cov-fail-under=80
-          .venv/bin/python -m coverage report --include='*/purdue_rov_cv/modules/*' --fail-under=70
+          .venv/bin/python -m pytest --cov=purdue_rov_cv --cov-report=term-missing
+          .venv/bin/python -m coverage json -o coverage.json
+          .venv/bin/python scripts/check_coverage.py coverage.json --core-min 80 --task-min 70

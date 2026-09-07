@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import queue
 import time
 from threading import Event
 
 import zmq
-from purdue_rov.cv.v1 import diagnostics_pb2
+from purdue_rov.cv.v1 import diagnostics_pb2, event_pb2
 
 from purdue_rov_cv.module_runner.publisher import configure_result_publisher
 from purdue_rov_cv.runtime.envelope import EnvelopeBuilder, EnvelopeBuildError
@@ -39,6 +40,21 @@ class VideoHealthPublisher:
         self.shutdown = shutdown
         self.sequence = sequence or PublisherSequence()
         self.ready = ready or Event()
+        self._events: queue.Queue[event_pb2.SystemEvent] = queue.Queue(maxsize=16)
+
+    def publish_critical_event(self, error_code: str, message: str) -> None:
+        try:
+            self._events.put_nowait(
+                event_pb2.SystemEvent(
+                    event_type="disk_space_low",
+                    source_id=self.source_id,
+                    event_time_unix_ns=time.time_ns(),
+                    error_code=error_code,
+                    message=message,
+                )
+            )
+        except queue.Full:
+            self.metrics.increment("priority_messages_dropped")
 
     def health(self) -> diagnostics_pb2.DiagnosticStatus:
         values = self.metrics.snapshot().values
@@ -80,21 +96,37 @@ class VideoHealthPublisher:
             socket.connect(self.endpoint)
             builder = EnvelopeBuilder(self.sequence)
             self.ready.set()
-            while not self.shutdown.is_requested:
+            while not self.shutdown.is_requested or not self._events.empty():
                 try:
-                    built = builder.build(
-                        topic=f"cv.health.{self.source_id}",
-                        payload_type="diagnostic_status_v1",
-                        payload=self.health(),
-                        task_id="video_receiver",
-                        source_id=self.source_id,
-                        camera_id=self.camera_id,
-                    )
+                    event = self._events.get_nowait()
+                except queue.Empty:
+                    event = None
+                try:
+                    if event is not None:
+                        built = builder.build(
+                            topic="system.event.disk_space_low",
+                            payload_type="system_event_v1",
+                            payload=event,
+                            task_id="video_recording",
+                            source_id=self.source_id,
+                            camera_id=self.camera_id,
+                        )
+                    elif self.shutdown.is_requested:
+                        break
+                    else:
+                        built = builder.build(
+                            topic=f"cv.health.{self.source_id}",
+                            payload_type="diagnostic_status_v1",
+                            payload=self.health(),
+                            task_id="video_receiver",
+                            source_id=self.source_id,
+                            camera_id=self.camera_id,
+                        )
                     socket.send_multipart(list(built.frames), flags=zmq.DONTWAIT)
                     self.metrics.increment("messages_sent")
                 except (EnvelopeBuildError, zmq.Again):
                     self.metrics.increment("zmq_send_dropped")
-                self.shutdown.wait(self.interval_seconds)
+                self.shutdown.wait(0.050 if event is not None else self.interval_seconds)
         finally:
             self.ready.set()
             if socket is not None:

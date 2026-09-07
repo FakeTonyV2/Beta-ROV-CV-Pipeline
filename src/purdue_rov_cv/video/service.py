@@ -42,6 +42,16 @@ class ReceiverBackend(Protocol):
     def stop(self) -> None: ...
 
 
+class EncodedRecorder(Protocol):
+    def start(self) -> None: ...
+
+    def push(self, unit: EncodedAccessUnit) -> bool: ...
+
+    def check_bus(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ReceiverCallbacks:
     on_packet: Callable[[int, int, int], None]
@@ -72,6 +82,7 @@ class VideoReceiverService:
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
         install_signals: bool = False,
         approximate_debug: bool = False,
+        encoded_recorder: EncodedRecorder | None = None,
     ) -> None:
         if not camera.stream_to_surface:
             raise ValueError(f"camera {camera_id!r} is not configured to stream to the surface")
@@ -126,6 +137,9 @@ class VideoReceiverService:
             )
         )
         self._backend: ReceiverBackend | None = None
+        self._encoded_recorder = encoded_recorder
+        self._recording_failed = False
+        self._recording_stop_pending = False
         self._subscriber_thread: Thread | None = None
         self._health_thread: Thread | None = None
         self._next_rebuild = 0.0
@@ -140,6 +154,7 @@ class VideoReceiverService:
         self.shutdown.register("frame-index-subscriber", self._stop_subscriber, order=10)
         self.shutdown.register("health-publisher", self._stop_health, order=20)
         self.shutdown.register("gstreamer-receiver", self._stop_backend, order=30)
+        self.shutdown.register("encoded-recorder", self._stop_encoded_recorder, order=35)
         self.shutdown.register("correlator", self.correlator.close, order=40)
         self.shutdown.register("local-fanout", self._close_fanout, order=50)
 
@@ -156,6 +171,7 @@ class VideoReceiverService:
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
         install_signals: bool = False,
         approximate_debug: bool = False,
+        encoded_recorder: EncodedRecorder | None = None,
     ) -> VideoReceiverService:
         if camera_id not in config.cameras:
             raise ValueError(f"unknown configured camera: {camera_id}")
@@ -172,6 +188,7 @@ class VideoReceiverService:
             monotonic_ns=monotonic_ns,
             install_signals=install_signals,
             approximate_debug=approximate_debug,
+            encoded_recorder=encoded_recorder,
         )
 
     @property
@@ -183,6 +200,11 @@ class VideoReceiverService:
     def backend(self) -> ReceiverBackend | None:
         with self._lock:
             return self._backend
+
+    @property
+    def recording_failed(self) -> bool:
+        with self._lock:
+            return self._recording_failed
 
     def _observe_state(self, _result: object) -> None:
         self.metrics.set_metadata("state", self.state_machine.state.value)
@@ -201,7 +223,7 @@ class VideoReceiverService:
                 self._packet_lost,
                 self._decoded,
                 self._invalid_decoded,
-                self.encoded_fanout.publish,
+                self._encoded,
             )
             candidate = self._backend_factory(callbacks)
             candidate.start()
@@ -231,7 +253,19 @@ class VideoReceiverService:
         self._health_thread = Thread(target=self.health.run, name=f"video-health:{self.camera_id}", daemon=True)
         self._subscriber_thread.start()
         self._health_thread.start()
+        if self._encoded_recorder is not None:
+            self._encoded_recorder.start()
         self._start_backend(rebuild=False)
+
+    def _encoded(self, unit: EncodedAccessUnit) -> None:
+        self.encoded_fanout.publish(unit)
+        recorder = self._encoded_recorder
+        if recorder is not None and not self.recording_failed and not recorder.push(unit):
+            self._fail_recording(
+                VideoReceiverBackendError("encoded Matroska recorder rejected access unit"),
+                ErrorCode.INTERNAL_ERROR,
+                stop_pending=True,
+            )
 
     def _packet(self, _ssrc: int, _timestamp: int, received_ns: int) -> None:
         with self._lock:
@@ -255,7 +289,7 @@ class VideoReceiverService:
         with self._lock:
             self._last_decoded_ns = frame.received_monotonic_ns
             self._stream_status = "VIDEO AVAILABLE"
-            if self.state_machine.state is ComponentState.DEGRADED:
+            if self.state_machine.state is ComponentState.DEGRADED and not self._recording_failed:
                 self._recovery_streak += 1
                 if self._recovery_streak >= RECOVERY_VALID_FRAMES:
                     self.state_machine.transition_to(ComponentState.RUNNING)
@@ -318,6 +352,44 @@ class VideoReceiverService:
         else:
             self.metrics.increment("warnings_suppressed")
 
+    def _fail_recording(
+        self,
+        error: BaseException,
+        error_code: ErrorCode,
+        *,
+        stop_pending: bool,
+    ) -> None:
+        with self._lock:
+            first_failure = not self._recording_failed
+            self._recording_failed = True
+            self._recording_stop_pending = self._recording_stop_pending or stop_pending
+            self._recovery_streak = 0
+        message = str(error)
+        self.metrics.set_metadata("last_error_code", error_code.value)
+        self.metrics.set_metadata("last_error_message", message)
+        if self.state_machine.state in {ComponentState.READY, ComponentState.RUNNING}:
+            self.state_machine.transition_to(ComponentState.DEGRADED)
+        if not first_failure:
+            return
+        if error_code is ErrorCode.DISK_SPACE_LOW:
+            self.health.publish_critical_event(error_code.value, message)
+            self._log("CRITICAL", error_code.value, message)
+        else:
+            self._log("ERROR", "VIDEO_RECORDING_FAILED", message, error_code=error_code.value)
+
+    def _stop_failed_recording(self) -> None:
+        with self._lock:
+            pending = self._recording_stop_pending
+            self._recording_stop_pending = False
+        if not pending or self._encoded_recorder is None:
+            return
+        try:
+            self._encoded_recorder.stop()
+        except Exception as error:
+            message = f"recording cleanup after failure also failed: {type(error).__name__}: {error}"
+            self.metrics.set_metadata("last_error_message", message)
+            self._log("ERROR", "VIDEO_RECORDING_FINALIZE_FAILED", message)
+
     def _check_background_threads(self) -> None:
         if self.shutdown.token.is_requested:
             return
@@ -345,6 +417,7 @@ class VideoReceiverService:
         if self.shutdown.token.is_requested:
             return
         self._check_background_threads()
+        self._stop_failed_recording()
         self.correlator.expire()
         with self._lock:
             backend = self._backend
@@ -366,6 +439,15 @@ class VideoReceiverService:
         except Exception as error:
             self._degrade(error)
             return
+        if self._encoded_recorder is not None and not self.recording_failed:
+            try:
+                self._encoded_recorder.check_bus()
+            except Exception as error:
+                if getattr(error, "error_code", None) == ErrorCode.DISK_SPACE_LOW.value:
+                    self._fail_recording(error, ErrorCode.DISK_SPACE_LOW, stop_pending=False)
+                    return
+                self._fail_recording(error, ErrorCode.INTERNAL_ERROR, stop_pending=True)
+                return
         if now_ns - last_packet_ns >= RTP_TIMEOUT_NS:
             self._degrade(VideoReceiverBackendError("no RTP packet received for two seconds"))
             return
@@ -380,6 +462,10 @@ class VideoReceiverService:
             self._backend = None
         if backend is not None:
             backend.stop()
+
+    def _stop_encoded_recorder(self) -> None:
+        if self._encoded_recorder is not None:
+            self._encoded_recorder.stop()
 
     def _join(self, thread: Thread | None, name: str) -> None:
         if thread is None:
@@ -421,6 +507,7 @@ class VideoReceiverService:
 
 __all__ = [
     "BackendFactory",
+    "EncodedRecorder",
     "REBUILD_RETRY_SECONDS",
     "RECOVERY_VALID_FRAMES",
     "RTP_TIMEOUT_NS",

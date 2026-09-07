@@ -6,6 +6,7 @@ import re
 from enum import StrEnum
 from ipaddress import IPv4Address
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -155,15 +156,15 @@ class DebugSnapshotsConfig(ConfigModel):
 
 
 class StructuredRecordingConfig(ConfigModel):
-    chunk_size_bytes: int = Field(gt=0)
-    compression: str
+    chunk_size_bytes: Literal[1_048_576]
+    compression: Literal["zstd"]
 
 
 class RecordingConfig(ConfigModel):
     enabled: bool
     directory: Path
-    video_segment_seconds: int = Field(gt=0)
-    minimum_free_space_gib: int = Field(ge=0)
+    video_segment_seconds: Literal[300]
+    minimum_free_space_gib: Literal[10]
     structured: StructuredRecordingConfig
 
     @field_validator("directory", mode="before")

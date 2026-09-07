@@ -10,8 +10,10 @@ from uuid import uuid4
 
 from purdue_rov_cv.config.issues import ConfigurationError
 from purdue_rov_cv.config.loader import load_config
+from purdue_rov_cv.recording.video import EncodedMatroskaRecorder, VideoSegmentPaths
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.json_logging import configure_json_logger
+from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.wire.errors import ErrorCode
 
 from .service import VideoReceiverService
@@ -28,6 +30,7 @@ def _parser() -> _ReceiverArgumentParser:
     parser.add_argument("--camera", required=True, help="configured surface-visible camera ID")
     parser.add_argument("--config", type=Path, help="mission YAML")
     parser.add_argument("--approximate-debug", action="store_true", help="label wrap-aware near-RTP matches")
+    parser.add_argument("--record-session", help="record encoded H.264 into this shared safe session identifier")
     return parser
 
 
@@ -41,12 +44,22 @@ def video_receiver_main(argv: list[str] | None = None) -> ExitCode:
         source_id=args.camera,
         publisher_session_id=session,
     )
+    encoded_recorder = None
+    metrics = RuntimeMetrics()
+    if args.record_session is not None:
+        encoded_recorder = EncodedMatroskaRecorder(
+            VideoSegmentPaths(config.recording.directory, args.record_session, args.camera),
+            segment_seconds=config.recording.video_segment_seconds,
+            metrics=metrics,
+        )
     service = VideoReceiverService.from_config(
         args.camera,
         config,
         logger=logger,
+        metrics=metrics,
         install_signals=True,
         approximate_debug=args.approximate_debug,
+        encoded_recorder=encoded_recorder,
     )
     service.run()
     return ExitCode.CLEAN_SHUTDOWN

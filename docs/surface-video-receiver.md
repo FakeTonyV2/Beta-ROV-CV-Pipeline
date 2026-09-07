@@ -88,8 +88,10 @@ Decoded operator/debug/surface-CV consumers each receive an independent
 capacity-one keep-latest subscription. One slow consumer therefore cannot block
 GStreamer or accumulate history. A separate bounded encoded-access-unit branch
 is the seam for recorder/relay consumers, preserving H.264 without re-encoding.
-Final segment naming, disk protection, recording control, and MCAP/video
-coordination remain owned by the recorder subsystem.
+The seam fixes caps to H.264 byte-stream access-unit alignment so downstream
+recorders never depend on an implicit parser negotiation choice.
+Phase 8 connects this seam to encoded Matroska segmentation with UTC naming,
+disk protection, and bounded shutdown; no decoded-frame re-encoding is used.
 
 ## Lifecycle, health, and metrics
 

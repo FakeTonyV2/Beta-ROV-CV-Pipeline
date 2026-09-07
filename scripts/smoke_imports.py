@@ -24,6 +24,8 @@ MODULES = (
     "purdue_rov_cv.messaging",
     "purdue_rov_cv.module_runner",
     "purdue_rov_cv.modules",
+    "purdue_rov_cv.recording",
+    "purdue_rov_cv.replay",
     "purdue_rov_cv.runtime",
     "purdue_rov_cv.video",
 )

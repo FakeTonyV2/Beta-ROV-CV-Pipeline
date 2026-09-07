@@ -5,7 +5,7 @@ clock: {server_ip: 192.168.50.1, maximum_offset_ms: 25, check_interval_seconds: 
 messaging: {broker: {publisher_endpoint: tcp://192.168.50.1:5555, subscriber_endpoint: tcp://192.168.50.1:5556}, control: {client_endpoint: tcp://192.168.50.1:5560, module_endpoint: ipc:///run/purdue-rov-cv/module-control.sock}, max_message_bytes: 4194304, result_send_hwm: 5, result_receive_hwm: 5}
 diagnostics: {publish_interval_ms: 1000, log_level: DEBUG}
 debug_snapshots: {enabled: true, maximum_rate_hz: 1.0, maximum_width: 640, maximum_height: 360, jpeg_quality: 70}
-recording: {enabled: false, directory: /tmp/purdue-rov-cv/recordings, video_segment_seconds: 60, minimum_free_space_gib: 1, structured: {chunk_size_bytes: 1048576, compression: zstd}}
+recording: {enabled: false, directory: /tmp/purdue-rov-cv/recordings, video_segment_seconds: 300, minimum_free_space_gib: 10, structured: {chunk_size_bytes: 1048576, compression: zstd}}
 camera_limits: {maximum_configured: 16, maximum_active: 12}
 cameras:
   usb_webcam: {adapter: v4l2, device_path: /dev/purdue-rov-cv/usb_webcam, device_path_kind: fallback, format: mjpeg, width: 1280, height: 720, frame_rate: 30, stream_index: 0, stream_to_surface: true, cv_enabled: true, allow_software_encode: true, slot_capacity_bytes: 2764800}

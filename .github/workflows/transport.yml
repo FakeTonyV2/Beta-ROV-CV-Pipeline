@@ -1,0 +1,20 @@
+name: Privileged transport acceptance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  phase-75:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated tc/netem and slow-consumer acceptance
+        run: bash scripts/run_transport_tests.sh
+      - name: Upload transport evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-75-transport
+          path: test-results/transport/
+          if-no-files-found: warn

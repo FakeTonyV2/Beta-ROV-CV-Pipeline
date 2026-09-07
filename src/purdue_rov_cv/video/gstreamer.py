@@ -74,7 +74,8 @@ class GStreamerRtpReceiver:
         return (
             f'udpsrc name=rtp_source port={self.port} buffer-size={RTP_RECEIVE_BUFFER_BYTES} caps="{caps}" '
             f"! rtpjitterbuffer name=jitter latency={RTP_JITTER_LATENCY_MS} drop-on-latency=true do-lost=true "
-            "! rtph264depay name=depay ! h264parse name=parser ! tee name=encoded_tee "
+            "! rtph264depay name=depay ! h264parse name=parser "
+            "! video/x-h264,stream-format=byte-stream,alignment=au ! tee name=encoded_tee "
             "encoded_tee. ! queue name=decode_queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
             "leaky=downstream ! avdec_h264 ! videoconvert ! video/x-raw,format=BGR "
             "! appsink name=decoded_sink emit-signals=true max-buffers=1 drop=true sync=false "

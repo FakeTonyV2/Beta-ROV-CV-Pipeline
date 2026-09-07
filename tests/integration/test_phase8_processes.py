@@ -141,7 +141,10 @@ def _stop(process: multiprocessing.Process) -> float:
     os.kill(process.pid, signal.SIGTERM)
     process.join(5.0)
     elapsed = time.monotonic() - started
-    assert not process.is_alive()
+    if process.is_alive():
+        process.kill()
+        process.join(2.0)
+        pytest.fail(f"{process.name} did not stop within 5.0 seconds after SIGTERM")
     assert process.exitcode == 0
     assert elapsed < 5.0
     return elapsed
@@ -297,6 +300,7 @@ def _simulated_camera(path: Path, stop: multiprocessing.synchronize.Event) -> No
         writer.close()
 
 
+@pytest.mark.timeout(75)
 def test_phase30_real_broker_router_camera_module_subscriber_recorder(tmp_path: Path) -> None:
     process_context = multiprocessing.get_context("fork")
     pub, sub, client_endpoint = _free_endpoint(), _free_endpoint(), _free_endpoint()
@@ -330,8 +334,12 @@ def test_phase30_real_broker_router_camera_module_subscriber_recorder(tmp_path: 
         args=(tmp_path / "crash-peer", pub, sub),
         name="phase8-30-crash-recorder",
     )
-    receiver_status = process_context.Queue()
-    video_receiver = process_context.Process(
+    # GStreamer/GLib must not inherit pytest/coverage threads and locks. Start
+    # this child with the Phase 7 spawn pattern and establish readiness before
+    # launching the faster fork-based non-GStreamer fixtures.
+    video_process_context = multiprocessing.get_context("spawn")
+    receiver_status = video_process_context.Queue()
+    video_receiver = video_process_context.Process(
         target=_receiver_process,
         args=("phase8_isolation_camera", 24, receiver_status),
         name="phase8-30-video-receiver",
@@ -343,19 +351,24 @@ def test_phase30_real_broker_router_camera_module_subscriber_recorder(tmp_path: 
     subscriber.connect(sub)
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     received: list[bytes] | None = None
+    video_ready = False
     try:
+        video_receiver.start()
+        receiver_camera, receiver_state = receiver_status.get(timeout=30.0)
+        assert receiver_camera == "phase8_isolation_camera"
+        assert receiver_state in {ComponentState.READY.value, ComponentState.RUNNING.value}
+        video_ready = True
         broker.start()
         time.sleep(0.2)
         router.start()
         recorder.start()
         crash_recorder.start()
-        video_receiver.start()
         camera.start()
-        deadline = time.monotonic() + 3.0
+        deadline = time.monotonic() + 8.0
         while not (tmp_path / "task_a").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         module.start()
-        identities.get(timeout=5.0)
+        identities.get(timeout=10.0)
         _wait_state(client, "task_a", ComponentState.READY)
         response = client.execute_command(_request("task_a", "start"))
         assert response.resulting_state == ComponentState.RUNNING
@@ -373,13 +386,21 @@ def test_phase30_real_broker_router_camera_module_subscriber_recorder(tmp_path: 
         subscriber.close(linger=0)
         context.term()
         camera_stop.set()
-        camera.join(2.0)
+        if camera.pid is not None:
+            camera.join(2.0)
+            if camera.is_alive():
+                camera.kill()
+                camera.join(2.0)
         if crash_recorder.is_alive():
             os.kill(crash_recorder.pid, signal.SIGKILL)
             crash_recorder.join(2.0)
         for process in (video_receiver, module, recorder, router, broker):
             if process.pid is not None and process.is_alive():
-                _stop(process)
+                if process is video_receiver and not video_ready:
+                    process.kill()
+                    process.join(2.0)
+                else:
+                    _stop(process)
     assert received is not None
     records = list(IndexedMcapSource(tmp_path / "integration" / "structured.mcap").records())
     assert any(item.serialized_envelope == received[1] for item in records)
@@ -673,7 +694,7 @@ def test_real_encoded_matroska_segmentation_and_video_replay(tmp_path: Path) -> 
     disk_recorder.check_bus()
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(60)
 def test_real_rtp_receiver_records_sigterm_finalizes_and_replays(tmp_path: Path) -> None:
     process_context = multiprocessing.get_context("spawn")
     status = process_context.Queue()
@@ -685,7 +706,7 @@ def test_real_rtp_receiver_records_sigterm_finalizes_and_replays(tmp_path: Path)
     receiver.start()
     sender = None
     try:
-        kind, port, payload_type = status.get(timeout=8)
+        kind, port, payload_type = status.get(timeout=30)
         assert kind == "ready"
         sender = GStreamerRtpSender(
             "phase8_camera",

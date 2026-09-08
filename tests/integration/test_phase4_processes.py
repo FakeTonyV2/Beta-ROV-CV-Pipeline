@@ -278,6 +278,7 @@ def test_real_process_router_module_client_commands_heartbeat_and_shutdown(tmp_p
         if module.is_alive():
             _stop_process(module)
         _stop_process(router)
+    assert not (tmp_path / "module-control.sock").exists()
 
 
 def test_real_socket_router_preserves_origin_when_two_clients_reuse_an_inflight_id(tmp_path: Path) -> None:

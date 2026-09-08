@@ -34,6 +34,7 @@ addopts = "-ra"
 markers = [
   "transport: real Linux transport impairment or sustained backpressure acceptance",
   "requires_net_admin: requires isolated network namespaces and CAP_NET_ADMIN/root",
+  "extended: long-running or hardware acceptance coverage excluded from normal CI",
 ]
 
 [tool.coverage.run]
@@ -56,6 +57,7 @@ files = [
   "src/purdue_rov_cv/video",
   "src/purdue_rov_cv/recording",
   "src/purdue_rov_cv/replay",
+  "src/purdue_rov_cv/preflight",
   "src/purdue_rov_cv/cli.py",
 ]
 explicit_package_bases = true

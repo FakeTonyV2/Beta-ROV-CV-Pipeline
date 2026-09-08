@@ -5,8 +5,10 @@ from .backend import (
     CaptureBackendError,
     CaptureBackendUnavailable,
     CapturedFrame,
+    DisconnectAfterFramesBackend,
     GStreamerCaptureBackend,
     SurfaceRtpStream,
+    SyntheticCaptureBackend,
 )
 from .service import CameraService, RetryController
 
@@ -16,7 +18,9 @@ __all__ = [
     "CaptureBackendError",
     "CaptureBackendUnavailable",
     "CapturedFrame",
+    "DisconnectAfterFramesBackend",
     "GStreamerCaptureBackend",
     "SurfaceRtpStream",
+    "SyntheticCaptureBackend",
     "RetryController",
 ]

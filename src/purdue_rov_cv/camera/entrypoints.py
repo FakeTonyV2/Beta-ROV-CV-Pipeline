@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Never
 from uuid import uuid4
@@ -20,7 +21,13 @@ from purdue_rov_cv.video.mapping import RtpFrameIndexMapper
 from purdue_rov_cv.video.sender import FrameIndexPublisher
 from purdue_rov_cv.wire.errors import ErrorCode
 
-from .backend import GStreamerCaptureBackend, SurfaceRtpStream
+from .backend import (
+    CaptureBackend,
+    DisconnectAfterFramesBackend,
+    GStreamerCaptureBackend,
+    SurfaceRtpStream,
+    SyntheticCaptureBackend,
+)
 from .service import CameraService
 
 
@@ -34,6 +41,17 @@ def _parser() -> _CameraArgumentParser:
     parser = _CameraArgumentParser(prog="purdue-cv-camera")
     parser.add_argument("--camera", required=True, help="configured camera ID")
     parser.add_argument("--config", type=Path, help="mission YAML")
+    parser.add_argument("--simulate", action="store_true", help="use the deterministic synthetic capture backend")
+    parser.add_argument(
+        "--simulate-gstreamer",
+        action="store_true",
+        help="use the production GStreamer/FrameIndex path with its deterministic video test source",
+    )
+    parser.add_argument(
+        "--disconnect-after-frames",
+        type=int,
+        help="simulation-only camera disconnect hook; the service then exercises normal recovery",
+    )
     return parser
 
 
@@ -51,9 +69,28 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
         publisher_session_id=session,
     )
     metrics = RuntimeMetrics()
-    publisher = None
-    mapper = None
-    if camera.stream_to_surface:
+    backend_factory: Callable[[], CaptureBackend]
+    if args.simulate and args.simulate_gstreamer:
+        raise ValueError("choose only one simulated camera backend")
+    if args.disconnect_after_frames is not None and not (args.simulate or args.simulate_gstreamer):
+        raise ValueError("--disconnect-after-frames requires a simulation mode")
+    if args.simulate:
+
+        def simulated_backend_factory() -> SyntheticCaptureBackend:
+            return SyntheticCaptureBackend(
+                camera.width,
+                camera.height,
+                camera.frame_rate,
+                disconnect_after_frames=args.disconnect_after_frames,
+            )
+
+        backend_factory = simulated_backend_factory
+        publisher = None
+        mapper = None
+    else:
+        publisher = None
+        mapper = None
+    if not args.simulate and camera.stream_to_surface:
         allocation = derive_stream_allocation(args.camera, camera.stream_index)
         publisher = FrameIndexPublisher(
             config.messaging.broker.publisher_endpoint,
@@ -63,9 +100,12 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
         )
         mapper = RtpFrameIndexMapper(args.camera, session.bytes)
 
-        def streaming_backend_factory() -> GStreamerCaptureBackend:
+        inject_disconnect = args.disconnect_after_frames is not None
+
+        def streaming_backend_factory() -> CaptureBackend:
+            nonlocal inject_disconnect
             assert publisher is not None and mapper is not None
-            return GStreamerCaptureBackend(
+            backend = GStreamerCaptureBackend(
                 camera.width,
                 camera.height,
                 camera.frame_rate,
@@ -80,13 +120,25 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
                     mapper=mapper,
                 ),
             )
+            if inject_disconnect:
+                inject_disconnect = False
+                assert args.disconnect_after_frames is not None
+                return DisconnectAfterFramesBackend(backend, args.disconnect_after_frames)
+            return backend
 
         backend_factory = streaming_backend_factory
 
-    else:
+    elif not args.simulate:
+        inject_disconnect = args.disconnect_after_frames is not None
 
-        def local_backend_factory() -> GStreamerCaptureBackend:
-            return GStreamerCaptureBackend(camera.width, camera.height, camera.frame_rate)
+        def local_backend_factory() -> CaptureBackend:
+            nonlocal inject_disconnect
+            backend = GStreamerCaptureBackend(camera.width, camera.height, camera.frame_rate)
+            if inject_disconnect:
+                inject_disconnect = False
+                assert args.disconnect_after_frames is not None
+                return DisconnectAfterFramesBackend(backend, args.disconnect_after_frames)
+            return backend
 
         backend_factory = local_backend_factory
 

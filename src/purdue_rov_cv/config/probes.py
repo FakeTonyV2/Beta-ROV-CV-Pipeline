@@ -172,7 +172,9 @@ def _capture_tuple_supported(listing: str, camera: CameraConfig) -> bool:
     return False
 
 
-def _sha256(path: Path) -> str:
+def sha256_file(path: Path) -> str:
+    """Return the canonical artifact digest used by validation and preflight."""
+
     digest = hashlib.sha256()
     with path.open("rb") as artifact:
         for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
@@ -245,7 +247,7 @@ class LinuxHardwareProbe:
                 issues.append(ConfigIssue("MODEL_NOT_FOUND", artifact_path, f"artifact does not exist: {path}"))
             else:
                 try:
-                    actual_hash = _sha256(path)
+                    actual_hash = sha256_file(path)
                 except OSError as error:
                     issues.append(ConfigIssue("MODEL_NOT_FOUND", artifact_path, f"cannot read artifact: {error}"))
                 else:

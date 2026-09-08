@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from pathlib import Path
 from threading import get_ident
 from typing import Protocol
 from uuid import UUID
@@ -562,6 +563,8 @@ class ControlRouterService:
             if client_socket is not None:
                 client_socket.close(linger=0)
             context.term()
+            if self.module_endpoint.startswith("ipc://"):
+                Path(self.module_endpoint.removeprefix("ipc://")).unlink(missing_ok=True)
             if self.state_machine.state is ComponentState.STOPPING:
                 self.shutdown.run(timeout_seconds=5.0)
 

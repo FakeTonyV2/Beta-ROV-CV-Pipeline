@@ -57,6 +57,31 @@ class CaptureBackend(Protocol):
     def stop(self) -> None: ...
 
 
+class DisconnectAfterFramesBackend:
+    """One-shot fault wrapper that fails through the normal capture boundary."""
+
+    def __init__(self, backend: CaptureBackend, frame_count: int) -> None:
+        if frame_count <= 0:
+            raise ValueError("disconnect frame count must be positive")
+        self.backend = backend
+        self.frame_count = frame_count
+        self._observed = 0
+
+    def start(self) -> None:
+        self.backend.start()
+
+    def poll(self, timeout_seconds: float) -> CapturedFrame | None:
+        if self._observed >= self.frame_count:
+            raise CaptureBackendError("injected camera disconnect")
+        frame = self.backend.poll(timeout_seconds)
+        if frame is not None:
+            self._observed += 1
+        return frame
+
+    def stop(self) -> None:
+        self.backend.stop()
+
+
 class GStreamerCaptureBackend:
     """`videotestsrc` -> raw BGR -> bounded dropping `appsink`.
 
@@ -354,11 +379,91 @@ class GStreamerCaptureBackend:
             raise CaptureBackendError("; ".join(failures))
 
 
+class SyntheticCaptureBackend:
+    """Dependency-free paced source for full-process simulation.
+
+    It implements the normal capture boundary, so camera service recovery,
+    shared-memory publication, module readiness, and shutdown remain unchanged.
+    ``disconnect_after_frames`` is an explicit simulation hook; a replacement
+    backend created by the service resumes with a fresh instance.
+    """
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        frame_rate: int,
+        *,
+        disconnect_after_frames: int | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        time_ns: Callable[[], int] = time.time_ns,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if min(width, height, frame_rate) <= 0:
+            raise ValueError("synthetic capture dimensions and frame rate must be positive")
+        if disconnect_after_frames is not None and disconnect_after_frames <= 0:
+            raise ValueError("disconnect_after_frames must be positive")
+        self.width = width
+        self.height = height
+        self.frame_rate = frame_rate
+        self.disconnect_after_frames = disconnect_after_frames
+        self._monotonic = monotonic
+        self._monotonic_ns = monotonic_ns
+        self._time_ns = time_ns
+        self._sleep = sleep
+        self._running = False
+        self._next_frame = 0.0
+        self._count = 0
+        self._pixels = bytes(width * height * 3)
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def start(self) -> None:
+        self._running = True
+        self._next_frame = self._monotonic()
+
+    def poll(self, timeout_seconds: float) -> CapturedFrame | None:
+        if not 0 <= timeout_seconds <= 0.250:
+            raise ValueError("capture poll timeout must be between zero and 250 ms")
+        if not self._running:
+            raise CaptureBackendError("synthetic capture backend is not running")
+        if self.disconnect_after_frames is not None and self._count >= self.disconnect_after_frames:
+            raise CaptureBackendError("injected camera disconnect")
+        now = self._monotonic()
+        remaining = self._next_frame - now
+        if remaining > timeout_seconds:
+            self._sleep(timeout_seconds)
+            return None
+        if remaining > 0:
+            self._sleep(remaining)
+        captured = CapturedFrame(
+            self._pixels,
+            self.width,
+            self.height,
+            self.width * 3,
+            PixelFormat.BGR8,
+            self._time_ns(),
+            self._monotonic_ns(),
+            None,
+        )
+        self._count += 1
+        self._next_frame += 1.0 / self.frame_rate
+        return captured
+
+    def stop(self) -> None:
+        self._running = False
+
+
 __all__ = [
     "CaptureBackend",
     "CaptureBackendError",
     "CaptureBackendUnavailable",
     "CapturedFrame",
+    "DisconnectAfterFramesBackend",
     "GStreamerCaptureBackend",
+    "SyntheticCaptureBackend",
     "SurfaceRtpStream",
 ]

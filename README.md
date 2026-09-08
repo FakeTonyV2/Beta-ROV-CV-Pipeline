@@ -13,6 +13,10 @@ Phase 8 adds the production `purdue-cv-recorder`, indexed zstd MCAP recording
 and replay, encoded-before-decode Matroska segmentation, disk protection, and
 dedicated replay-broker defaults. See [recording and replay](docs/recording-replay.md).
 
+Phase 9 adds the complete simulated full-system preflight, system-health and
+mission gate, surface operator client, deterministic clock/fault probes, and a
+real-process startup/shutdown harness. See [Phase 9 preflight](docs/phase9-preflight.md).
+
 Reference platforms:
 
 - Raspberry Pi 5: ARM64, Ubuntu Server 24.04 LTS, Python 3.12.x, systemd, tethered Ethernet, GStreamer >= 1.22, active cooling.

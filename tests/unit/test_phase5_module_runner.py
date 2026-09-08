@@ -518,6 +518,22 @@ def test_runner_dynamic_struct_validation_readiness_and_lifecycle() -> None:
     )
 
 
+@pytest.mark.parametrize("missing", ["initialized", "registration", "input", "first_frame"])
+def test_runner_readiness_requires_each_phase5_prerequisite(missing: str) -> None:
+    service = ModuleRunnerService(_config(), "gate_detection", _MinimalModule(), _FakeSource())
+    service._initialized = missing != "initialized"
+    service._registration_succeeded = missing != "registration"
+    if missing != "input":
+        service._input_exists.set()
+    if missing != "first_frame":
+        service._first_frame.set()
+    service._update_readiness()
+    assert service.state_machine.state is ComponentState.STARTING
+    response = service._execute_command(_request("start"))
+    assert response.status == control_pb2.COMMAND_STATUS_REJECTED
+    assert response.error_code == ErrorCode.INVALID_STATE_TRANSITION
+
+
 def test_runner_static_dynamic_update_is_rejected() -> None:
     service = ModuleRunnerService(_config(), "gate_detection", _MinimalModule(), _FakeSource())
     service.state_machine.transition_to(ComponentState.READY)

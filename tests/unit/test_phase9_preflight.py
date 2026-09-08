@@ -41,6 +41,7 @@ from purdue_rov_cv.preflight import (
     read_preflight_observation,
     run_preflight,
 )
+from purdue_rov_cv.preflight.harness import ManagedProcess, Phase9ProcessHarness, _active_interface
 from purdue_rov_cv.recording.disk import GIB, DiskSpaceGuard
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.state import ComponentState
@@ -59,6 +60,38 @@ def _evaluated() -> tuple[AppConfig, ProbeSnapshot]:
 
 def _by_id(results: tuple[CheckResult, ...]) -> dict[str, CheckResult]:
     return {item.check_id: item for item in results}
+
+
+def test_harness_selects_only_schema_valid_active_interface_names(tmp_path: Path) -> None:
+    for name, state in {
+        "br-ci-network": "up",
+        "eth.100": "up",
+        "eth0": "down",
+        "lo": "up",
+    }.items():
+        candidate = tmp_path / name
+        candidate.mkdir()
+        (candidate / "operstate").write_text(state, encoding="ascii")
+    assert _active_interface(tmp_path) == "lo"
+
+    (tmp_path / "eth0" / "operstate").write_text("up", encoding="ascii")
+    assert _active_interface(tmp_path) == "eth0"
+
+
+def test_harness_readiness_wait_fails_fast_when_child_exits(tmp_path: Path) -> None:
+    log_path = tmp_path / "failed.log"
+    log_file = log_path.open("w+", encoding="utf-8")
+    try:
+        import subprocess
+        import sys
+
+        process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(64)"])
+        process.wait(timeout=2.0)
+        managed = ManagedProcess("failed", process, log_path, log_file)
+        with pytest.raises(RuntimeError, match="exited before readiness"):
+            Phase9ProcessHarness._wait_until(lambda: False, "readiness", timeout=5.0, process=managed)
+    finally:
+        log_file.close()
 
 
 def test_check_matrix_is_complete_stable_and_explanatory() -> None:

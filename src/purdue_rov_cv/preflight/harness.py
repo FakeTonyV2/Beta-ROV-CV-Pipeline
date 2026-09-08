@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
@@ -18,7 +19,7 @@ from purdue_rov.cv.v1 import bounding_box_pb2, diagnostics_pb2
 
 from purdue_rov_cv.config.issues import ConfigIssue
 from purdue_rov_cv.config.loader import load_config
-from purdue_rov_cv.config.models import AppConfig, CameraConfig
+from purdue_rov_cv.config.models import IDENTIFIER_PATTERN, AppConfig, CameraConfig
 from purdue_rov_cv.config.probes import CameraProbeResult
 from purdue_rov_cv.frame_buffer import ReadStatus, SharedMemoryFrameReader
 from purdue_rov_cv.messaging.client import ControlClient
@@ -64,14 +65,22 @@ def _free_stream_index() -> int:
     raise RuntimeError("no isolated canonical RTP/RTCP port pair is available")
 
 
-def _active_interface() -> str:
-    for candidate in sorted(Path("/sys/class/net").iterdir()):
+def _active_interface(sysfs_root: Path = Path("/sys/class/net")) -> str:
+    active: list[str] = []
+    rejected: list[str] = []
+    for candidate in sorted(sysfs_root.iterdir()):
         try:
             if (candidate / "operstate").read_text(encoding="ascii").strip() == "up":
-                return candidate.name
+                if IDENTIFIER_PATTERN.fullmatch(candidate.name):
+                    active.append(candidate.name)
+                else:
+                    rejected.append(candidate.name)
         except OSError:
             continue
-    raise RuntimeError("no network interface reports operstate UP")
+    if active:
+        return next((name for name in active if name != "lo"), active[0])
+    detail = f"; schema-invalid active interfaces={rejected}" if rejected else ""
+    raise RuntimeError(f"no schema-valid network interface reports operstate UP{detail}")
 
 
 @dataclass(slots=True)
@@ -293,11 +302,26 @@ class Phase9ProcessHarness:
         return managed
 
     @staticmethod
-    def _wait_until(predicate, description: str, timeout: float = 60.0) -> None:  # type: ignore[no-untyped-def]
+    def _wait_until(
+        predicate: Callable[[], bool],
+        description: str,
+        timeout: float = 60.0,
+        *,
+        process: ManagedProcess | None = None,
+    ) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if predicate():
                 return
+            if process is not None and process.process.poll() is not None:
+                process.log_file.flush()
+                try:
+                    detail = process.log_path.read_text(encoding="utf-8").strip()
+                except OSError as error:
+                    detail = f"log unavailable: {error}"
+                raise RuntimeError(
+                    f"{process.name} exited before {description}: returncode={process.process.returncode}; log={detail}"
+                )
             time.sleep(0.1)
         raise TimeoutError(f"timed out waiting for {description}")
 
@@ -365,25 +389,24 @@ class Phase9ProcessHarness:
             if not simulated_clock.synchronized:
                 raise RuntimeError("simulated chrony service did not become ready")
             self.startup_order.append("chronyd")
-            self._launch("broker", "broker", "--config", str(self.config_path))
-            self._wait_until(self._broker_ready, "broker data-plane round trip")
+            broker_process = self._launch("broker", "broker", "--config", str(self.config_path))
+            self._wait_until(self._broker_ready, "broker data-plane round trip", process=broker_process)
             self.startup_order.append("broker")
-            self._launch("control-router", "router", "--config", str(self.config_path))
-            self._wait_until(self._router_ready, "control router request/response")
+            router_process = self._launch("control-router", "router", "--config", str(self.config_path))
+            self._wait_until(self._router_ready, "control router request/response", process=router_process)
             self.startup_order.append("control_router")
             camera_args = ["camera", "--config", str(self.config_path), "--camera", "front_camera"]
             if disconnect_after_frames is not None:
                 camera_args.extend(["--disconnect-after-frames", str(disconnect_after_frames)])
-            self._launch("camera", *camera_args)
+            camera_process = self._launch("camera", *camera_args)
             try:
-                self._wait_until(self._camera_has_frame, "simulated camera frame")
+                self._wait_until(self._camera_has_frame, "simulated camera frame", process=camera_process)
             except TimeoutError as error:
-                camera_process = next(item for item in self.processes if item.name == "camera")
                 raise TimeoutError(
                     f"{error}; last probe={self._camera_probe_detail}; camera exit={camera_process.process.poll()}"
                 ) from error
             self.startup_order.append("cameras")
-            self._launch("module", "module", "--config", str(self.config_path), "--task", "echo")
+            module_process = self._launch("module", "module", "--config", str(self.config_path), "--task", "echo")
             with ControlClient(self.control_endpoint, acknowledgement_timeout_seconds=0.2) as client:
                 operator = SurfaceOperator(client)
 
@@ -393,9 +416,8 @@ class Phase9ProcessHarness:
                     return status is not None and status.resulting_state == ComponentState.READY.value
 
                 try:
-                    self._wait_until(ready, "module readiness")
+                    self._wait_until(ready, "module readiness", process=module_process)
                 except TimeoutError as error:
-                    module_process = next(item for item in self.processes if item.name == "module")
                     raise TimeoutError(
                         f"{error}; last status={self._module_probe_detail}; module exit={module_process.process.poll()}"
                     ) from error
@@ -403,7 +425,7 @@ class Phase9ProcessHarness:
                 started = operator.start("echo")
                 if not started.succeeded or started.resulting_state != ComponentState.RUNNING.value:
                     raise RuntimeError(f"module start failed: {started}")
-                self._launch(
+                video_process = self._launch(
                     "video-receiver",
                     "video-receiver",
                     "--config",
@@ -414,8 +436,9 @@ class Phase9ProcessHarness:
                 self._wait_until(
                     lambda: self._health_running(f"video_receiver_{self.stream_index}"),
                     "video receiver decoded-frame readiness",
+                    process=video_process,
                 )
-                self._launch(
+                recorder_process = self._launch(
                     "subscriber-primary",
                     "subscriber",
                     "--endpoint",
@@ -451,6 +474,7 @@ class Phase9ProcessHarness:
                 self._wait_until(
                     lambda: self.recording_path.exists() and self._health_running("recorder"),
                     "recorder health readiness",
+                    process=recorder_process,
                 )
                 self.startup_order.append("recorder_operator")
                 self._wait_until(self.marker_path.exists, "parsed CV result")

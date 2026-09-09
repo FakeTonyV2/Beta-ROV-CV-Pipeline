@@ -2,19 +2,51 @@ name: Privileged transport acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/purdue_rov_cv/messaging/**"
+      - "src/purdue_rov_cv/module_runner/**"
+      - "src/purdue_rov_cv/video/**"
+      - "tests/transport/**"
+      - "scripts/run_transport_tests.sh"
+      - ".github/workflows/transport.yml"
+  schedule:
+    - cron: "23 4 * * 2"
+      timezone: "America/Indianapolis"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase75-transport
+  cancel-in-progress: false
 
 jobs:
   phase-75:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
-      - name: Run isolated tc/netem and slow-consumer acceptance
+
+      - name: Run isolated tc/netem acceptance
         run: bash scripts/run_transport_tests.sh
+
+      - name: Add acceptance summary
+        if: always()
+        shell: bash
+        run: |
+          summary="$(find test-results/transport -name 'phase75-acceptance-summary.md' -print -quit)"
+          if [[ -n "$summary" ]]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Upload transport evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase-75-transport
+          name: phase75-transport-${{ github.sha }}
           path: test-results/transport/
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30

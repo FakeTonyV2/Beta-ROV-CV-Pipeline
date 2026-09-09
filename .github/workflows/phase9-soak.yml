@@ -1,0 +1,51 @@
+name: Phase 9 sixty-minute soak
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 5 * * 0"
+      timezone: "America/Indianapolis"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase9-sixty-minute-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      PURDUE_ROV_CV_RUN_60_MIN_SOAK: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        env:
+          ALLOW_NON_REFERENCE_PLATFORM: "1"
+        run: |
+          bash scripts/setup_system_deps.sh
+          bash scripts/setup_venv.sh
+
+      - name: Run the actual sixty-minute soak
+        run: |
+          .venv/bin/python -m pytest \
+            tests/integration/test_phase9_full_system.py::test_phase9_sixty_minute_memory_soak_entrypoint \
+            --basetemp=test-results/phase9-soak \
+            --junitxml=test-results/phase9-soak/junit.xml \
+            -v -ra
+
+      - name: Upload soak evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase9-soak-${{ github.sha }}
+          path: test-results/phase9-soak/
+          if-no-files-found: error
+          retention-days: 30

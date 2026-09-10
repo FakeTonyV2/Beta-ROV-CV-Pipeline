@@ -25,15 +25,14 @@ surface-host configuration, where both `device.execution_target` and the
 enabled task's `execution_target` are `surface_laptop`; do not add a surface
 task to the Pi host file.
 
-An OAK-D camera retains the same stable path contract and changes only its
-adapter. Exact OAK-D capability is hardware-aware validation:
+A DepthAI camera uses its MXID and never a V4L2 path. Phase 10 validates this
+identity shape but does not implement DepthAI acquisition:
 
 ```yaml
 cameras:
   front_camera:
-    adapter: oakd
-    device_path: /dev/v4l/by-id/usb-luxonis-oakd
-    device_path_kind: by_id
+    adapter: depthai
+    mxid: 18443010D1AA0C1200
 ```
 
 Camera transport has one source of truth. Explicit port overrides are not
@@ -48,6 +47,9 @@ cameras:
     # Copy every required camera field from an existing camera.
     device_path: /dev/purdue-rov-cv/bottom_camera
     device_path_kind: fallback
+    resolution_tier: physical_port
+    stable_identity: pci-0000:00:14.0-usb-0:1.4:1.0
+    physical_port_label: ROV hub port 3
     stream_index: 1  # RTP 5002, RTCP 5003, RTP PT 97
 ```
 

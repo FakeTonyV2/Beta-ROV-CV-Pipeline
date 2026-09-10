@@ -668,13 +668,25 @@ def test_real_encoded_matroska_segmentation_and_video_replay(tmp_path: Path) -> 
     assert frame_count == len(decoded) > 0
     assert all(frame.pixel_format == "BGR" for frame in decoded)
 
+    def observe(frames, timestamps):
+        def collect(frame) -> None:
+            frames.append(frame)
+            timestamps.append(time.monotonic())
+
+        return collect
+
     durations = {}
     for rate in (ReplayRate.QUARTER, ReplayRate.HALF, ReplayRate.NORMAL, ReplayRate.DOUBLE):
         decoded_at_rate = []
-        started = time.monotonic()
-        count_at_rate = MatroskaVideoReplay(segments[0], decoded_at_rate.append, rate=rate).run()
-        durations[rate] = time.monotonic() - started
+        observed_at = []
+        count_at_rate = MatroskaVideoReplay(
+            segments[0],
+            observe(decoded_at_rate, observed_at),
+            rate=rate,
+        ).run()
         assert count_at_rate == len(decoded_at_rate) > 0
+        assert len(observed_at) > 1
+        durations[rate] = observed_at[-1] - observed_at[0]
     assert durations[ReplayRate.QUARTER] > durations[ReplayRate.HALF]
     assert durations[ReplayRate.HALF] > durations[ReplayRate.NORMAL]
     assert durations[ReplayRate.NORMAL] > durations[ReplayRate.DOUBLE]

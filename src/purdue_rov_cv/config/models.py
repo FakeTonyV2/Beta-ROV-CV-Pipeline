@@ -8,7 +8,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -61,9 +61,18 @@ class CameraPathKind(StrEnum):
     FALLBACK = "fallback"
 
 
+class CameraResolutionTier(StrEnum):
+    BY_ID = "by_id"
+    ID_PATH = "id_path"
+    PHYSICAL_PORT = "physical_port"
+
+
 class CameraAdapter(StrEnum):
-    V4L2 = "v4l2"
-    OAKD = "oakd"
+    # Keep the Python member name as a source-compatible migration aid.  The
+    # serialized value is deliberately explicit about the implementation.
+    V4L2 = "gstreamer_v4l2"
+    DEPTHAI = "depthai"
+    REALSENSE = "realsense"
 
 
 class CameraFormat(StrEnum):
@@ -175,8 +184,13 @@ class RecordingConfig(ConfigModel):
 
 class CameraConfig(ConfigModel):
     adapter: CameraAdapter
-    device_path: Path
-    device_path_kind: CameraPathKind
+    device_path: Path | None = None
+    device_path_kind: CameraPathKind | None = None
+    resolution_tier: CameraResolutionTier | None = None
+    stable_identity: str | None = None
+    physical_port_label: str | None = None
+    mxid: str | None = None
+    serial_number: str | None = None
     format: CameraFormat
     width: int = Field(gt=0, le=7_680)
     height: int = Field(gt=0, le=4_320)
@@ -189,7 +203,9 @@ class CameraConfig(ConfigModel):
 
     @field_validator("device_path", mode="before")
     @classmethod
-    def _absolute_device_path(cls, value: str | Path) -> Path:
+    def _absolute_device_path(cls, value: str | Path | None) -> Path | None:
+        if value is None:
+            return None
         return validate_absolute_linux_path(value)
 
     @field_validator("adapter", mode="before")
@@ -206,6 +222,76 @@ class CameraConfig(ConfigModel):
     @classmethod
     def _format_from_yaml(cls, value: CameraFormat | str) -> CameraFormat | str:
         return CameraFormat(value) if isinstance(value, str) else value
+
+    @field_validator("resolution_tier", mode="before")
+    @classmethod
+    def _resolution_tier_from_yaml(cls, value: CameraResolutionTier | str | None) -> CameraResolutionTier | str | None:
+        return CameraResolutionTier(value) if isinstance(value, str) else value
+
+    @field_validator("stable_identity", "physical_port_label", "mxid", "serial_number")
+    @classmethod
+    def _nonblank_optional_identity(cls, value: str | None) -> str | None:
+        return None if value is None else validate_nonblank(value)
+
+    @model_validator(mode="after")
+    def _backend_identity(self) -> CameraConfig:
+        if self.format in {CameraFormat.H264, CameraFormat.MJPEG} and self.allow_software_encode:
+            raise ValueError("allow_software_encode is valid only for raw camera formats")
+        if self.adapter is CameraAdapter.V4L2:
+            if self.device_path is None or self.device_path_kind is None or self.resolution_tier is None:
+                raise ValueError("gstreamer_v4l2 requires device_path, device_path_kind, and resolution_tier")
+            if self.mxid is not None or self.serial_number is not None:
+                raise ValueError("gstreamer_v4l2 does not accept mxid or serial_number")
+            if self.device_path_kind is CameraPathKind.BY_ID:
+                if self.resolution_tier is not CameraResolutionTier.BY_ID:
+                    raise ValueError("by_id device paths require resolution_tier=by_id")
+                if self.stable_identity is not None:
+                    raise ValueError("by_id device paths derive identity from the configured symlink")
+                if self.physical_port_label is not None:
+                    raise ValueError("by_id device paths do not use physical_port_label")
+            elif self.resolution_tier not in {
+                CameraResolutionTier.ID_PATH,
+                CameraResolutionTier.PHYSICAL_PORT,
+            }:
+                raise ValueError("fallback paths require resolution_tier=id_path or physical_port")
+            elif self.stable_identity is None:
+                raise ValueError("fallback paths require stable_identity")
+            elif self.resolution_tier is CameraResolutionTier.PHYSICAL_PORT:
+                if self.physical_port_label is None:
+                    raise ValueError("physical_port fallback requires physical_port_label")
+            elif self.physical_port_label is not None:
+                raise ValueError("physical_port_label is valid only for physical_port fallback")
+        elif self.adapter is CameraAdapter.DEPTHAI:
+            if self.mxid is None:
+                raise ValueError("depthai requires mxid")
+            if any(
+                value is not None
+                for value in (
+                    self.device_path,
+                    self.device_path_kind,
+                    self.resolution_tier,
+                    self.stable_identity,
+                    self.physical_port_label,
+                    self.serial_number,
+                )
+            ):
+                raise ValueError("depthai accepts mxid, not V4L2 or RealSense identity fields")
+        else:
+            if self.serial_number is None:
+                raise ValueError("realsense requires serial_number")
+            if any(
+                value is not None
+                for value in (
+                    self.device_path,
+                    self.device_path_kind,
+                    self.resolution_tier,
+                    self.stable_identity,
+                    self.physical_port_label,
+                    self.mxid,
+                )
+            ):
+                raise ValueError("realsense accepts serial_number, not V4L2 or DepthAI identity fields")
+        return self
 
 
 class CameraLimitsConfig(ConfigModel):

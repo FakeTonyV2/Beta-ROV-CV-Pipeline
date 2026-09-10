@@ -32,6 +32,7 @@ where = ["src", "generated/python"]
 testpaths = ["tests"]
 addopts = "-ra"
 markers = [
+  "hardware: requires an explicitly configured physical device",
   "transport: real Linux transport impairment or sustained backpressure acceptance",
   "requires_net_admin: requires isolated network namespaces and CAP_NET_ADMIN/root",
   "extended: long-running or hardware acceptance coverage excluded from normal CI",

@@ -18,7 +18,13 @@ from purdue_rov_cv.camera import (
     SurfaceRtpStream,
 )
 from purdue_rov_cv.camera.entrypoints import camera_entrypoint
-from purdue_rov_cv.config.models import CameraAdapter, CameraConfig, CameraFormat, CameraPathKind
+from purdue_rov_cv.config.models import (
+    CameraAdapter,
+    CameraConfig,
+    CameraFormat,
+    CameraPathKind,
+    CameraResolutionTier,
+)
 from purdue_rov_cv.frame_buffer import PixelFormat, SharedMemoryFrameWriter
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
@@ -78,6 +84,8 @@ def _config() -> CameraConfig:
         adapter=CameraAdapter.V4L2,
         device_path=Path("/dev/simulated"),
         device_path_kind=CameraPathKind.FALLBACK,
+        resolution_tier=CameraResolutionTier.ID_PATH,
+        stable_identity="test-simulated-camera",
         format=CameraFormat.MJPEG,
         width=4,
         height=3,
@@ -85,7 +93,7 @@ def _config() -> CameraConfig:
         stream_index=0,
         stream_to_surface=False,
         cv_enabled=True,
-        allow_software_encode=True,
+        allow_software_encode=False,
         slot_capacity_bytes=64,
     )
 
@@ -267,6 +275,27 @@ def test_two_second_timeout_is_one_event_and_requests_rebuild() -> None:
         clock.advance(0.5)
         service.step()
         assert service.metrics.snapshot().values["pipeline_restarts"] == 1
+    finally:
+        service.close()
+
+
+def test_open_without_a_frame_does_not_reset_reconnect_backoff() -> None:
+    clock = _Clock()
+    service = _service(clock, [_Backend([]), _Backend([]), _Backend([])])
+    try:
+        service.initialize()
+        clock.advance(2.0)
+        service.step()
+        clock.advance(0.5)
+        service.step()
+        clock.advance(2.0)
+        service.step()
+        clock.advance(0.5)
+        service.step()
+        assert service.metrics.snapshot().values["pipeline_restarts"] == 1
+        clock.advance(0.5)
+        service.step()
+        assert service.metrics.snapshot().values["pipeline_restarts"] == 2
     finally:
         service.close()
 

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from purdue_rov_cv.config.issues import ConfigurationError
 from purdue_rov_cv.config.loader import load_config
+from purdue_rov_cv.config.models import CameraFormat
 from purdue_rov_cv.recording.video import EncodedMatroskaRecorder, VideoSegmentPaths
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.json_logging import configure_json_logger
@@ -37,6 +38,11 @@ def _parser() -> _ReceiverArgumentParser:
 def video_receiver_main(argv: list[str] | None = None) -> ExitCode:
     args = _parser().parse_args(argv)
     config = load_config(args.config)
+    if args.camera not in config.cameras:
+        raise ValueError(f"unknown configured camera: {args.camera}")
+    camera = config.cameras[args.camera]
+    if args.record_session is not None and camera.format is CameraFormat.MJPEG:
+        raise ValueError("MJPEG surface receive is supported, but Phase 8 encoded recording accepts H.264 only")
     session = uuid4()
     logger = configure_json_logger(
         device_id=config.device.device_id,

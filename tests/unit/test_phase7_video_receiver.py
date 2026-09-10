@@ -9,7 +9,13 @@ import pytest
 import zmq
 from purdue_rov.cv.v1 import diagnostics_pb2, frame_index_pb2
 
-from purdue_rov_cv.config.models import CameraAdapter, CameraConfig, CameraFormat, CameraPathKind
+from purdue_rov_cv.config.models import (
+    CameraAdapter,
+    CameraConfig,
+    CameraFormat,
+    CameraPathKind,
+    CameraResolutionTier,
+)
 from purdue_rov_cv.runtime.envelope import EnvelopeBuilder
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.runtime.publisher import PublisherSequence
@@ -361,6 +367,8 @@ def _camera() -> CameraConfig:
         adapter=CameraAdapter.V4L2,
         device_path=Path("/dev/simulated"),
         device_path_kind=CameraPathKind.FALLBACK,
+        resolution_tier=CameraResolutionTier.ID_PATH,
+        stable_identity="test-simulated-camera",
         format=CameraFormat.H264,
         width=2,
         height=2,

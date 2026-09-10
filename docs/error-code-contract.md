@@ -9,8 +9,8 @@ it belongs to diagnostics, events, logs, data-plane drops, or client/process lif
 |---|---|---|---|---|---|---|---|
 | CONFIG_INVALID | module | startup config invalid | N/A diagnostic | ERROR | 78 | fix config/restart | test_config_invalid |
 | RESTART_REQUIRED | module | immutable setting changed | REJECTED | DEGRADED | 0 | restart module | test_restart_required |
-| CAMERA_NOT_FOUND | camera service | device missing | FAILED | ERROR | 75 | restore device/retry | test_camera_not_found |
-| CAMERA_MODE_UNSUPPORTED | camera service | unsupported format | FAILED | ERROR | 0 | select supported mode | test_camera_mode_unsupported |
+| CAMERA_NOT_FOUND | camera service | valid removable device temporarily absent | N/A diagnostic | DEGRADED | 0 | restore same stable identity; automatic retry | test_camera_not_found |
+| CAMERA_MODE_UNSUPPORTED | camera service | exact V4L2 tuple unsupported | FAILED | ERROR | 78 | correct configuration/restart | test_camera_mode_unsupported |
 | CAMERA_FRAME_TIMEOUT | camera service | frame deadline elapsed | N/A diagnostic | DEGRADED | 0 | restart capture | test_camera_frame_timeout |
 | SHARED_MEMORY_INVALID | camera/module | shared-memory invalid | N/A diagnostic | ERROR | 75 | restart services | test_shared_memory_invalid |
 | MODEL_NOT_FOUND | module | artifact absent | FAILED | ERROR | 78 | deploy model | test_model_not_found |

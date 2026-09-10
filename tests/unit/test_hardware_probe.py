@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from purdue_rov_cv.config import load_config
-from purdue_rov_cv.config.probes import LinuxHardwareProbe
+from purdue_rov_cv.config.probes import LinuxHardwareProbe, validate_hardware_config
 
 MISSION_PATH = Path(__file__).parents[2] / "config" / "mission.yaml"
 
@@ -25,8 +25,19 @@ def _config():
 
 
 def _probe(**overrides):
+    def command_runner(command):
+        if command[0] == "udevadm":
+            path = command[-1]
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                f"DEVLINKS={path}\nID_SERIAL=test-camera\nID_V4L_CAPABILITIES=:capture:\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, V4L2_LISTING, "")
+
     defaults = {
-        "command_runner": lambda command: subprocess.CompletedProcess(command, 0, V4L2_LISTING, ""),
+        "command_runner": command_runner,
         "runtime_available": lambda module_name: True,
         "video_device_check": lambda path: True,
         "symlink_check": lambda path: True,
@@ -43,7 +54,10 @@ def test_linux_probe_checks_exact_v4l2_capture_tuple_without_changing_device(tmp
 
     result = _probe().probe_camera("front_camera", camera)
 
-    assert result == result.__class__(True, True, True, True)
+    assert result.path_exists and result.resolves_to_video_device
+    assert result.path_kind_matches and result.capture_tuple_supported and result.mode_opened
+    assert result.resolved_path == str(path)
+    assert result.resolution_tier == "by_id"
 
 
 def test_linux_probe_rejects_unlisted_capture_tuple(tmp_path):
@@ -54,7 +68,35 @@ def test_linux_probe_rejects_unlisted_capture_tuple(tmp_path):
     result = _probe().probe_camera("front_camera", camera)
 
     assert result.capture_tuple_supported is False
-    assert "not listed" in result.detail
+    assert "CAMERA_MODE_UNSUPPORTED" in result.detail
+
+
+def test_linux_probe_does_not_report_an_invalid_target_as_a_video_device(tmp_path):
+    path = tmp_path / "video0"
+    path.write_bytes(b"placeholder")
+    camera = _config().cameras["front_camera"].model_copy(update={"device_path": path})
+    result = _probe(video_device_check=lambda _path: False).probe_camera("front_camera", camera)
+    assert result.path_exists
+    assert not result.resolves_to_video_device
+    assert not result.capture_tuple_supported
+
+
+def test_linux_probe_marks_missing_tooling_as_not_executed(tmp_path):
+    path = tmp_path / "video0"
+    path.write_bytes(b"placeholder")
+    camera = _config().cameras["front_camera"].model_copy(update={"device_path": path})
+
+    def missing(_command):
+        raise FileNotFoundError("missing")
+
+    result = _probe(command_runner=missing).probe_camera("front_camera", camera)
+    assert not result.probe_executed
+    assert "not installed" in result.detail
+
+    config = _config().model_copy(update={"cameras": {"front_camera": camera}})
+    issues = validate_hardware_config(config, _probe(command_runner=missing))
+    camera_codes = {issue.code for issue in issues if issue.path.startswith("cameras.")}
+    assert camera_codes == {"CAMERA_BACKEND_UNAVAILABLE"}
 
 
 def test_hardware_probe_hashes_enabled_artifacts_and_skips_disabled_tasks(tmp_path):

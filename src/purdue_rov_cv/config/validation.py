@@ -15,11 +15,14 @@ from .models import (
     SUPPORTED_SCHEMA_VERSION,
     AppConfig,
     ArtifactFormat,
+    CameraAdapter,
+    CameraFormat,
     CameraPathKind,
 )
 from .ports import RTP_PAYLOAD_TYPE_MAX, RTP_PAYLOAD_TYPE_MIN, derive_stream_allocation
 
 _VIDEO_DEVICE_RE = re.compile(r"^/dev/video\d+$")
+_DEVICE_LINK_NAME_RE = re.compile(r"^[A-Za-z0-9._:+-]+$")
 _TCP_ENDPOINT_RE = re.compile(r"^tcp://(?P<host>[^:/]+):(?P<port>\d+)$")
 _RUNTIME_COMPATIBILITY = {
     ArtifactFormat.ONNX: {"onnxruntime", "tensorrt"},
@@ -93,42 +96,31 @@ def _validate_camera_path(camera_id: str, path: Path, kind: CameraPathKind, issu
     if _VIDEO_DEVICE_RE.fullmatch(value):
         issues.append(_issue("CAMERA_PATH_ENUMERATION_DEPENDENT", field_path, "must not use /dev/videoN", value=value))
     if kind is CameraPathKind.BY_ID:
-        if not value.startswith("/dev/v4l/by-id/"):
+        if path.parent.as_posix() != "/dev/v4l/by-id":
             issues.append(
                 _issue(
                     "CAMERA_PATH_KIND_MISMATCH", field_path, "by_id paths must be under /dev/v4l/by-id/", value=value
                 )
             )
-        if value.startswith("/dev/purdue-rov-cv/"):
+        elif not _DEVICE_LINK_NAME_RE.fullmatch(path.name):
             issues.append(
                 _issue(
-                    "CAMERA_PATH_KIND_MISMATCH", field_path, "by_id paths must not use fallback directory", value=value
+                    "CAMERA_PATH_INVALID",
+                    field_path,
+                    "by_id filename contains characters unsafe for a GStreamer device property",
+                    value=value,
                 )
             )
     elif kind is CameraPathKind.FALLBACK:
-        if not value.startswith("/dev/purdue-rov-cv/"):
+        expected = f"/dev/purdue-rov-cv/{camera_id}"
+        if value != expected:
             issues.append(
                 _issue(
                     "CAMERA_PATH_KIND_MISMATCH",
                     field_path,
-                    "fallback paths must be under /dev/purdue-rov-cv/",
+                    "fallback path must be exactly /dev/purdue-rov-cv/<camera_id>",
+                    expected=expected,
                     value=value,
-                )
-            )
-        if value.startswith("/dev/v4l/by-id/"):
-            issues.append(
-                _issue(
-                    "CAMERA_PATH_KIND_MISMATCH", field_path, "fallback paths must not use by-id directory", value=value
-                )
-            )
-        if path.name != camera_id:
-            issues.append(
-                _issue(
-                    "CAMERA_FALLBACK_NAME_MISMATCH",
-                    field_path,
-                    "fallback filename must equal camera ID",
-                    expected=camera_id,
-                    value=path.name,
                 )
             )
 
@@ -196,7 +188,28 @@ def validate_static_config(config: AppConfig) -> tuple[ConfigIssue, ...]:
     allocations_by_index: dict[int, str] = {}
     bound_ports: list[tuple[str, str, int, str]] = []
     for camera_id, camera in sorted(config.cameras.items()):
-        _validate_camera_path(camera_id, camera.device_path, camera.device_path_kind, issues)
+        if camera.adapter is CameraAdapter.V4L2:
+            # Required by CameraConfig's backend validator; the assertions also
+            # keep the semantic validator precisely typed.
+            assert camera.device_path is not None and camera.device_path_kind is not None
+            _validate_camera_path(camera_id, camera.device_path, camera.device_path_kind, issues)
+        if camera.format in {CameraFormat.YUYV, CameraFormat.NV12}:
+            if camera.stream_to_surface and not camera.allow_software_encode:
+                issues.append(
+                    _issue(
+                        "CAMERA_RAW_SURFACE_REQUIRES_SOFTWARE_ENCODE_OPT_IN",
+                        f"cameras.{camera_id}.allow_software_encode",
+                        "raw V4L2 surface streaming requires explicit per-camera software encoding opt-in",
+                    )
+                )
+            if not camera.cv_enabled:
+                issues.append(
+                    _issue(
+                        "CAMERA_RAW_WITHOUT_CONSUMER",
+                        f"cameras.{camera_id}",
+                        "raw capture must enable CV or an explicitly opted-in surface stream",
+                    )
+                )
         allocation = derive_stream_allocation(camera_id, camera.stream_index)
         if camera.stream_index in allocations_by_index:
             issues.append(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import math
 import os
 import re
 import shutil
@@ -18,34 +17,24 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 
+from purdue_rov_cv.camera.v4l2 import (
+    V4L2ConfigurationError,
+    V4L2DeviceInvalid,
+    V4L2DeviceProbe,
+    V4L2Disconnected,
+    V4L2IdentityMismatch,
+    V4L2ModeUnsupported,
+    V4L2ProbeError,
+)
+
 from .issues import ConfigIssue
-from .models import AppConfig, CameraConfig, CameraFormat, Runtime
+from .models import AppConfig, CameraAdapter, CameraConfig, Runtime
 from .ports import derive_stream_allocation
 
-_V4L2_FOURCC: dict[CameraFormat, str] = {
-    CameraFormat.H264: "H264",
-    CameraFormat.MJPEG: "MJPG",
-    CameraFormat.YUYV: "YUYV",
-    CameraFormat.NV12: "NV12",
-}
 _RUNTIME_MODULE: dict[Runtime, str] = {
     Runtime.ONNXRUNTIME: "onnxruntime",
     Runtime.TENSORRT: "tensorrt",
 }
-_FORMAT_LINE = re.compile(r"^\s*\[\d+]:\s+'(?P<fourcc>[^']+)'")
-_DISCRETE_SIZE_LINE = re.compile(r"^\s*Size:\s+Discrete\s+(?P<width>\d+)x(?P<height>\d+)")
-_STEPPED_SIZE_LINE = re.compile(
-    r"^\s*Size:\s+(?:Stepwise|Continuous)\s+"
-    r"(?P<minimum_width>\d+)x(?P<minimum_height>\d+)\s+-\s+"
-    r"(?P<maximum_width>\d+)x(?P<maximum_height>\d+)"
-    r"(?:\s+with\s+step\s+(?P<step_width>\d+)/(?P<step_height>\d+))?"
-)
-_DISCRETE_INTERVAL_LINE = re.compile(r"^\s*Interval:\s+Discrete\s+.*\((?P<fps>[0-9.]+)\s+fps\)")
-_STEPPED_INTERVAL_LINE = re.compile(
-    r"^\s*Interval:\s+(?:Stepwise|Continuous)\s+"
-    r"(?P<minimum_seconds>[0-9.]+)s\s+-\s+(?P<maximum_seconds>[0-9.]+)s"
-    r"(?:\s+with\s+step\s+(?P<step_seconds>[0-9.]+)s)?"
-)
 
 
 @dataclass(frozen=True)
@@ -55,6 +44,12 @@ class CameraProbeResult:
     path_kind_matches: bool
     capture_tuple_supported: bool
     detail: str = ""
+    mode_opened: bool = True
+    resolved_path: str = ""
+    resolution_tier: str = ""
+    physical_identity: str = ""
+    backend_supported: bool = True
+    probe_executed: bool = True
 
 
 class HardwareProbe(Protocol):
@@ -97,81 +92,6 @@ def _check_port_availability(host: str, port: int, protocol: str) -> str | None:
     return None
 
 
-def _matches_stepped_value(value: int, minimum: int, maximum: int, step: int | None) -> bool:
-    if not minimum <= value <= maximum:
-        return False
-    if step is None or step == 0:
-        return True
-    return (value - minimum) % step == 0
-
-
-def _matches_frame_interval(
-    frame_rate: int,
-    minimum_seconds: float,
-    maximum_seconds: float,
-    step_seconds: float | None,
-) -> bool:
-    requested_seconds = 1 / frame_rate
-    tolerance = 1e-6
-    if not minimum_seconds - tolerance <= requested_seconds <= maximum_seconds + tolerance:
-        return False
-    if step_seconds is None or step_seconds == 0.0:
-        return True
-    quotient = (requested_seconds - minimum_seconds) / step_seconds
-    return math.isclose(quotient, round(quotient), abs_tol=tolerance)
-
-
-def _capture_tuple_supported(listing: str, camera: CameraConfig) -> bool:
-    """Parse ``v4l2-ctl --list-formats-ext`` without changing a device setting."""
-    expected_fourcc = _V4L2_FOURCC[camera.format]
-    current_fourcc: str | None = None
-    size_matches = False
-
-    for line in listing.splitlines():
-        format_match = _FORMAT_LINE.match(line)
-        if format_match:
-            current_fourcc = format_match["fourcc"]
-            size_matches = False
-            continue
-        if current_fourcc != expected_fourcc:
-            continue
-
-        size_match = _DISCRETE_SIZE_LINE.match(line)
-        if size_match:
-            size_matches = (int(size_match["width"]), int(size_match["height"])) == (camera.width, camera.height)
-            continue
-
-        stepped_size_match = _STEPPED_SIZE_LINE.match(line)
-        if stepped_size_match:
-            size_matches = _matches_stepped_value(
-                camera.width,
-                int(stepped_size_match["minimum_width"]),
-                int(stepped_size_match["maximum_width"]),
-                int(stepped_size_match["step_width"]) if stepped_size_match["step_width"] else None,
-            ) and _matches_stepped_value(
-                camera.height,
-                int(stepped_size_match["minimum_height"]),
-                int(stepped_size_match["maximum_height"]),
-                int(stepped_size_match["step_height"]) if stepped_size_match["step_height"] else None,
-            )
-            continue
-
-        if not size_matches:
-            continue
-        interval_match = _DISCRETE_INTERVAL_LINE.match(line)
-        if interval_match and math.isclose(float(interval_match["fps"]), camera.frame_rate, abs_tol=1e-3):
-            return True
-        stepped_interval_match = _STEPPED_INTERVAL_LINE.match(line)
-        if stepped_interval_match and _matches_frame_interval(
-            camera.frame_rate,
-            float(stepped_interval_match["minimum_seconds"]),
-            float(stepped_interval_match["maximum_seconds"]),
-            float(stepped_interval_match["step_seconds"]) if stepped_interval_match["step_seconds"] else None,
-        ):
-            return True
-    return False
-
-
 def sha256_file(path: Path) -> str:
     """Return the canonical artifact digest used by validation and preflight."""
 
@@ -202,39 +122,68 @@ class LinuxHardwareProbe:
     symlink_check: Callable[[Path], bool] = lambda path: path.is_symlink()
     port_checker: Callable[[str, int, str], str | None] = _check_port_availability
     v4l2_ctl: str = "v4l2-ctl"
+    gst_launch: str = "gst-launch-1.0"
 
     def probe_camera(self, camera_id: str, camera: CameraConfig) -> CameraProbeResult:
-        path = camera.device_path
-        if not path.exists():
-            return CameraProbeResult(False, False, False, False, f"{path} does not exist")
-        try:
-            resolved_path = path.resolve(strict=True)
-        except (OSError, RuntimeError) as error:
-            return CameraProbeResult(True, False, False, False, f"cannot resolve {path}: {error}")
-
-        is_video_device = self.video_device_check(resolved_path)
-        path_kind_matches = self.symlink_check(path)
-        if not is_video_device:
+        if camera.adapter is not CameraAdapter.V4L2:
             return CameraProbeResult(
+                False,
+                False,
                 True,
                 False,
+                f"hardware probe for backend {camera.adapter.value} is outside Phase 10",
+                False,
+                backend_supported=False,
+                probe_executed=False,
+            )
+        assert camera.device_path is not None
+        probe = V4L2DeviceProbe(
+            command_runner=self.command_runner,
+            video_device_check=self.video_device_check,
+            symlink_check=self.symlink_check,
+            v4l2_ctl=self.v4l2_ctl,
+            gst_launch=self.gst_launch,
+        )
+        try:
+            report = probe.validate(camera_id, camera, open_mode=True)
+        except V4L2Disconnected as error:
+            return CameraProbeResult(False, False, True, False, str(error), False)
+        except V4L2DeviceInvalid as error:
+            path_exists = camera.device_path.exists()
+            path_kind_matches = self.symlink_check(camera.device_path) if path_exists else False
+            resolves_to_video = False
+            if path_exists:
+                try:
+                    resolves_to_video = self.video_device_check(camera.device_path.resolve(strict=True))
+                except (OSError, RuntimeError):
+                    pass
+            return CameraProbeResult(
+                path_exists,
+                resolves_to_video,
                 path_kind_matches,
                 False,
-                f"{path} resolves to {resolved_path}, not a V4L2 /dev/videoN character device",
+                str(error),
+                False,
             )
-
-        try:
-            result = self.command_runner((self.v4l2_ctl, "--device", str(resolved_path), "--list-formats-ext"))
-        except FileNotFoundError:
-            return CameraProbeResult(True, True, path_kind_matches, False, f"{self.v4l2_ctl} is not installed")
-        except (OSError, subprocess.TimeoutExpired) as error:
-            return CameraProbeResult(True, True, path_kind_matches, False, f"{self.v4l2_ctl} failed: {error}")
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
-            return CameraProbeResult(True, True, path_kind_matches, False, f"{self.v4l2_ctl} failed: {detail}")
-        supported = _capture_tuple_supported(result.stdout, camera)
-        detail = "" if supported else "configured format, resolution, or frame rate is not listed by v4l2-ctl"
-        return CameraProbeResult(True, True, path_kind_matches, supported, detail)
+        except V4L2IdentityMismatch as error:
+            return CameraProbeResult(True, True, False, False, str(error), False)
+        except V4L2ModeUnsupported as error:
+            return CameraProbeResult(True, True, True, False, str(error), False)
+        except V4L2ConfigurationError as error:
+            return CameraProbeResult(True, True, True, False, str(error), False, probe_executed=False)
+        except V4L2ProbeError as error:
+            return CameraProbeResult(True, True, True, False, str(error), False)
+        return CameraProbeResult(
+            True,
+            True,
+            True,
+            True,
+            report.open_detail,
+            report.mode_opened,
+            str(report.device.resolved_path),
+            report.device.resolution_tier.value,
+            report.device.stable_identity,
+        )
 
     def validate_runtime_and_artifact(self, config: AppConfig) -> tuple[ConfigIssue, ...]:
         issues: list[ConfigIssue] = []
@@ -329,6 +278,8 @@ def create_default_hardware_probe() -> LinuxHardwareProbe:
         raise HardwareProbeUnavailable("hardware probing requires Linux with V4L2 support")
     if shutil.which("v4l2-ctl") is None:
         raise HardwareProbeUnavailable("v4l2-ctl is not installed; install the v4l-utils system package")
+    if shutil.which("gst-launch-1.0") is None:
+        raise HardwareProbeUnavailable("gst-launch-1.0 is not installed; install the GStreamer tools package")
     return LinuxHardwareProbe()
 
 
@@ -338,6 +289,15 @@ def validate_hardware_config(config: AppConfig, probe: HardwareProbe) -> tuple[C
     for camera_id, camera in sorted(config.cameras.items()):
         result = probe.probe_camera(camera_id, camera)
         path = f"cameras.{camera_id}.device_path"
+        if not result.backend_supported or not result.probe_executed:
+            issues.append(
+                ConfigIssue(
+                    "CAMERA_BACKEND_UNAVAILABLE",
+                    f"cameras.{camera_id}.adapter",
+                    result.detail or "physical backend probe is unavailable",
+                )
+            )
+            continue
         if not result.path_exists:
             issues.append(
                 ConfigIssue("CAMERA_NOT_FOUND", path, result.detail or "configured camera path does not exist")
@@ -360,6 +320,14 @@ def validate_hardware_config(config: AppConfig, probe: HardwareProbe) -> tuple[C
             issues.append(
                 ConfigIssue(
                     "CAMERA_MODE_UNSUPPORTED", f"cameras.{camera_id}", result.detail or "capture tuple is unsupported"
+                )
+            )
+        elif not result.mode_opened:
+            issues.append(
+                ConfigIssue(
+                    "CAMERA_MODE_OPEN_FAILED",
+                    f"cameras.{camera_id}",
+                    result.detail or "advertised capture mode did not open",
                 )
             )
     issues.extend(probe.validate_runtime_and_artifact(config))

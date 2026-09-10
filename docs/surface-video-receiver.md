@@ -13,7 +13,7 @@ count is embedded in the receiver.
 
 ## Pipeline and RTP identity
 
-The production receive path is:
+The native H.264 receive path is:
 
 ```text
 udpsrc(buffer-size=4194304, configured RTP caps)
@@ -22,6 +22,11 @@ udpsrc(buffer-size=4194304, configured RTP caps)
      -> capacity-one leaky queue -> avdec_h264 -> BGR -> dropping appsink
      -> bounded encoded queue -> appsink (future recorder/relay seam)
 ```
+
+For a camera configured as MJPEG, the same receiver architecture selects
+`encoding-name=JPEG -> rtpjpegdepay -> jpegparse -> tee`, with `jpegdec` on the
+bounded BGR decode branch. Raw cameras that explicitly opt into software H.264
+encoding use the H.264 receiver branch.
 
 The `udpsrc` probe counts only packets with a parseable RTP header and updates
 `last_rtp_packet_monotonic_ns`. A second probe after the jitterbuffer reads the
@@ -87,9 +92,11 @@ capture UTC time. Phase 7 does not draw CV graphics or attach stale CV results.
 Decoded operator/debug/surface-CV consumers each receive an independent
 capacity-one keep-latest subscription. One slow consumer therefore cannot block
 GStreamer or accumulate history. A separate bounded encoded-access-unit branch
-is the seam for recorder/relay consumers, preserving H.264 without re-encoding.
-The seam fixes caps to H.264 byte-stream access-unit alignment so downstream
-recorders never depend on an implicit parser negotiation choice.
+is the seam for recorder/relay consumers. H.264 is preserved without
+re-encoding and fixes caps to byte-stream access-unit alignment so downstream
+recorders never depend on an implicit parser negotiation choice. MJPEG is fully
+supported for RTP receive, decode, display, and FrameIndex correlation, but the
+Phase 8 `--record-session` path remains H.264-only and rejects MJPEG explicitly.
 Phase 8 connects this seam to encoded Matroska segmentation with UTC naming,
 disk protection, and bounded shutdown; no decoded-frame re-encoding is used.
 

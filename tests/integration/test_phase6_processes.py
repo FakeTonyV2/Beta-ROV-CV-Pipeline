@@ -14,7 +14,13 @@ import pytest
 
 from purdue_rov_cv.camera import CameraService, CaptureBackendError, CapturedFrame, GStreamerCaptureBackend
 from purdue_rov_cv.camera.entrypoints import camera_entrypoint
-from purdue_rov_cv.config.models import CameraAdapter, CameraConfig, CameraFormat, CameraPathKind
+from purdue_rov_cv.config.models import (
+    CameraAdapter,
+    CameraConfig,
+    CameraFormat,
+    CameraPathKind,
+    CameraResolutionTier,
+)
 from purdue_rov_cv.frame_buffer import (
     HEADER_SIZE,
     FrameHeader,
@@ -31,12 +37,16 @@ from purdue_rov_cv.frame_buffer import (
 from purdue_rov_cv.frame_buffer.buffer import _startup_lock
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 
+PROCESS_STARTUP_TIMEOUT_SECONDS = 30.0
+
 
 def _config() -> CameraConfig:
     return CameraConfig(
         adapter=CameraAdapter.V4L2,
         device_path=Path("/dev/simulated"),
         device_path_kind=CameraPathKind.FALLBACK,
+        resolution_tier=CameraResolutionTier.ID_PATH,
+        stable_identity="test-simulated-camera",
         format=CameraFormat.MJPEG,
         width=8,
         height=6,
@@ -44,7 +54,7 @@ def _config() -> CameraConfig:
         stream_index=0,
         stream_to_surface=False,
         cv_enabled=True,
-        allow_software_encode=True,
+        allow_software_encode=False,
         slot_capacity_bytes=256,
     )
 
@@ -70,7 +80,9 @@ def _writer_process(camera_id: str, count: int, ready, start, finished, stop) ->
     start.wait(5.0)
     for number in range(count):
         writer.write(_pattern(number))
-        time.sleep(0.0005)
+        # Yield long enough for a separately scheduled reader to observe
+        # multiple publications even on instrumented or mounted-filesystem CI.
+        time.sleep(0.005)
     finished.set()
     stop.wait(5.0)
     writer.close()
@@ -151,7 +163,7 @@ def _hold_writer(camera_id: str, ready, stop) -> None:
     try:
         writer.open()
         ready.set()
-        stop.wait(10.0)
+        stop.wait(PROCESS_STARTUP_TIMEOUT_SECONDS + 5.0)
     finally:
         writer.close()
 
@@ -271,7 +283,10 @@ def _camera_process(camera_id: str, session: bytes) -> None:
     service.run()
 
 
-def _attach_until(reader: SharedMemoryFrameReader, timeout: float = 5.0) -> None:
+def _attach_until(
+    reader: SharedMemoryFrameReader,
+    timeout: float = PROCESS_STARTUP_TIMEOUT_SECONDS,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if reader.attach():
@@ -304,7 +319,7 @@ def test_real_writer_reader_processes_never_accept_torn_patterns() -> None:
     reader = SharedMemoryFrameReader(camera_id, unregister_from_resource_tracker=False)
     writer.start()
     try:
-        assert ready.wait(5.0)
+        assert ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
         _attach_until(reader)
         start.set()
         accepted = 0
@@ -337,7 +352,9 @@ def test_dedicated_writer_and_reader_children_never_accept_torn_patterns() -> No
     results = context.Queue()
     writer = context.Process(
         target=_writer_process,
-        args=(camera_id, 500, writer_ready, start, finished, stop),
+        # Keep publishing beyond the reader's six-second observation window so
+        # a burst-scheduled writer cannot finish before the reader is resumed.
+        args=(camera_id, 2_000, writer_ready, start, finished, stop),
         name="phase6-dedicated-writer",
     )
     reader = context.Process(
@@ -346,12 +363,14 @@ def test_dedicated_writer_and_reader_children_never_accept_torn_patterns() -> No
         name="phase6-dedicated-reader",
     )
     writer.start()
-    assert writer_ready.wait(5.0)
+    assert writer_ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
     reader.start()
     try:
-        assert reader_ready.wait(5.0)
+        assert reader_ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
         start.set()
-        reader.join(8.0)
+        # Coverage tracing substantially slows both spawned interpreters on the
+        # reference CI host; this is a data-integrity test, not a shutdown SLA.
+        reader.join(15.0)
         assert not reader.is_alive()
         records = []
         while True:
@@ -388,7 +407,7 @@ def test_rejected_reader_process_never_unlinks_camera_owned_segment() -> None:
     )
     try:
         consumer.start()
-        consumer.join(5.0)
+        consumer.join(PROCESS_STARTUP_TIMEOUT_SECONDS)
         assert consumer.exitcode == 0
         verifier = shared_memory.SharedMemory(name=shared_memory_name(camera_id), create=False)
         verifier.close()
@@ -417,11 +436,11 @@ def test_reader_attachment_waits_for_creator_header_initialization() -> None:
             owner = shared_memory.SharedMemory(name=name, create=True, size=segment_size(256))
             owner.buf[:] = bytes(owner.size)
             consumer.start()
-            assert started.wait(5.0)
+            assert started.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
             assert not finished.wait(0.2)
             header = FrameHeader.initial(256, os.getpid(), uuid4().bytes)
             owner.buf[:HEADER_SIZE] = header.encode()
-        consumer.join(5.0)
+        consumer.join(PROCESS_STARTUP_TIMEOUT_SECONDS)
         assert consumer.exitcode == 0
         assert results.get(timeout=1.0) == (True, None)
     finally:
@@ -439,7 +458,7 @@ def test_crashed_owner_is_recovered_by_replacement_process_identity() -> None:
     ready = context.Event()
     crashed = context.Process(target=_crash_owner, args=(camera_id, ready), name="phase6-crashed-owner")
     crashed.start()
-    assert ready.wait(5.0)
+    assert ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
     crashed.join(5.0)
     assert crashed.exitcode == 9
     stale = shared_memory.SharedMemory(name=shared_memory_name(camera_id), create=False)
@@ -467,7 +486,7 @@ def test_concurrent_replacements_serialize_stale_owner_recovery() -> None:
     stale_ready = context.Event()
     crashed = context.Process(target=_crash_owner, args=(camera_id, stale_ready), name="phase6-race-stale-owner")
     crashed.start()
-    assert stale_ready.wait(5.0)
+    assert stale_ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
     crashed.join(5.0)
     assert crashed.exitcode == 9
 
@@ -485,7 +504,10 @@ def test_concurrent_replacements_serialize_stale_owner_recovery() -> None:
         process.start()
     try:
         start.set()
-        outcomes = {results.get(timeout=5.0), results.get(timeout=5.0)}
+        outcomes = {
+            results.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS),
+            results.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS),
+        }
         assert outcomes == {"created", "live-owner"}
         deadline = time.monotonic() + 2.0
         while sum(process.is_alive() for process in replacements) == 2 and time.monotonic() < deadline:
@@ -517,9 +539,9 @@ def test_live_owner_duplicate_process_exits_78_without_unlinking_owner() -> None
     reader = SharedMemoryFrameReader("front_camera", unregister_from_resource_tracker=False)
     owner.start()
     try:
-        assert ready.wait(5.0)
+        assert ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
         duplicate.start()
-        duplicate.join(5.0)
+        duplicate.join(PROCESS_STARTUP_TIMEOUT_SECONDS)
         assert duplicate.exitcode == ExitCode.INVALID_CONFIGURATION
         assert result.get(timeout=1.0) == ExitCode.INVALID_CONFIGURATION
         assert owner.is_alive()

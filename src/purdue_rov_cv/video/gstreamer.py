@@ -9,6 +9,8 @@ from collections.abc import Callable
 from threading import RLock
 from typing import Any
 
+from purdue_rov_cv.config.models import CameraFormat
+
 from .models import DecodedVideoFrame, EncodedAccessUnit
 
 RTP_RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024
@@ -43,10 +45,12 @@ class GStreamerRtpReceiver:
         on_decoded: Callable[[DecodedVideoFrame], None],
         on_invalid_decoded: Callable[[str], None],
         on_encoded: Callable[[EncodedAccessUnit], None],
+        source_format: CameraFormat = CameraFormat.H264,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
         self.port = port
         self.payload_type = payload_type
+        self.source_format = source_format
         self._on_packet = on_packet
         self._on_packet_lost = on_packet_lost
         self._on_decoded = on_decoded
@@ -68,16 +72,22 @@ class GStreamerRtpReceiver:
         return self._pipeline is not None
 
     def pipeline_description(self) -> str:
-        caps = (
-            f"application/x-rtp,media=video,encoding-name=H264,payload=(int){self.payload_type},clock-rate=(int)90000"
+        is_mjpeg = self.source_format is CameraFormat.MJPEG
+        encoding = "JPEG" if is_mjpeg else "H264"
+        caps = f"application/x-rtp,media=video,encoding-name={encoding},payload=(int){self.payload_type},clock-rate=(int)90000"
+        codec_chain = (
+            "! rtpjpegdepay name=depay ! jpegparse name=parser ! tee name=encoded_tee "
+            if is_mjpeg
+            else "! rtph264depay name=depay ! h264parse name=parser "
+            "! video/x-h264,stream-format=byte-stream,alignment=au ! tee name=encoded_tee "
         )
+        decoder = "jpegdec" if is_mjpeg else "avdec_h264"
         return (
             f'udpsrc name=rtp_source port={self.port} buffer-size={RTP_RECEIVE_BUFFER_BYTES} caps="{caps}" '
             f"! rtpjitterbuffer name=jitter latency={RTP_JITTER_LATENCY_MS} drop-on-latency=true do-lost=true "
-            "! rtph264depay name=depay ! h264parse name=parser "
-            "! video/x-h264,stream-format=byte-stream,alignment=au ! tee name=encoded_tee "
+            f"{codec_chain}"
             "encoded_tee. ! queue name=decode_queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
-            "leaky=downstream ! avdec_h264 ! videoconvert ! video/x-raw,format=BGR "
+            f"leaky=downstream ! {decoder} ! videoconvert ! video/x-raw,format=BGR "
             "! appsink name=decoded_sink emit-signals=true max-buffers=1 drop=true sync=false "
             "encoded_tee. ! queue name=encoded_queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 "
             "leaky=downstream ! appsink name=encoded_sink emit-signals=true max-buffers=8 drop=true sync=false"

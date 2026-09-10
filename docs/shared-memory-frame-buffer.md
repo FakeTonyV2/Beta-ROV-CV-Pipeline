@@ -21,9 +21,11 @@ purdue-cv-camera --camera <camera_id> --config <mission.yaml>
 ```
 
 It uses the configured width, height, frame rate, and `slot_capacity_bytes`.
-Phase 6 deliberately does not probe or open the configured physical V4L2 or OAK
-device. Those responsibilities belong to the physical-camera/provisioning
-subsystem.
+Phase 6 introduced the service boundary without opening physical devices.
+Phase 10 now supplies the production `gstreamer_v4l2` backend through that same
+supervisor, shared-memory writer, metrics, recovery, and shutdown lifecycle.
+DepthAI and RealSense acquisition remain owned by their later physical-backend
+implementations.
 
 ## Stable segment identity and ownership
 

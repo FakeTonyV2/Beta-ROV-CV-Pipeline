@@ -28,6 +28,8 @@ from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.state import ComponentState
 from purdue_rov_cv.wire.errors import ErrorCode
 
+PROCESS_STARTUP_TIMEOUT_SECONDS = 30.0
+
 
 def _free_tcp_endpoint() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
@@ -122,7 +124,7 @@ def _request(command_type: str, *, command_id: bytes | None = None) -> control_p
 
 
 def _wait_for_registered(client: ControlClient) -> control_pb2.CommandResponse:
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + PROCESS_STARTUP_TIMEOUT_SECONDS
     last: control_pb2.CommandResponse | None = None
     while time.monotonic() < deadline:
         last = client.send_command(_request("get_status"))
@@ -157,7 +159,7 @@ def test_real_process_broker_forwards_valid_multipart_and_shuts_down() -> None:
     builder = EnvelopeBuilder(PublisherSequence(), unix_time_ns=lambda: 1, monotonic_ns=lambda: 1)
     received: list[bytes] | None = None
     try:
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + PROCESS_STARTUP_TIMEOUT_SECONDS
         while time.monotonic() < deadline and received is None:
             payload = diagnostics_pb2.DiagnosticStatus(source_id="camera")
             built = builder.build(
@@ -198,7 +200,7 @@ def test_real_process_router_module_client_commands_heartbeat_and_shutdown(tmp_p
         name="phase4-module",
     )
     router.start()
-    assert ready.wait(10.0)
+    assert ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
     module.start()
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.2)
     raw_context = zmq.Context()
@@ -292,7 +294,7 @@ def test_real_socket_router_preserves_origin_when_two_clients_reuse_an_inflight_
         name="phase4-multi-client-router",
     )
     router.start()
-    assert ready.wait(10.0)
+    assert ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
     context = zmq.Context()
     module: zmq.Socket[bytes] = context.socket(zmq.DEALER)
     client_a: zmq.Socket[bytes] = context.socket(zmq.DEALER)
@@ -373,9 +375,12 @@ def test_real_process_uncertain_response_recovers_cached_outcome_once(tmp_path: 
         name="phase4-status-module",
     )
     router.start()
-    assert ready.wait(10.0)
+    assert ready.wait(PROCESS_STARTUP_TIMEOUT_SECONDS)
     module.start()
-    client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.2)
+    # The intentionally suppressed first response still exercises the unknown-outcome
+    # path at any timeout. Give the one permitted status lookup enough time to cross
+    # two spawned processes on slower WSL/NTFS hosts.
+    client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=1.0)
     try:
         _wait_for_registered(client)
         command = _request("start", command_id=_SUPPRESSED_RESPONSE_COMMAND_ID)

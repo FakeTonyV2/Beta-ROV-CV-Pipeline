@@ -1,19 +1,11 @@
-"""Phase 6 simulated camera service."""
+"""Camera service public API, loaded lazily to avoid configuration cycles."""
 
-from .backend import (
-    CaptureBackend,
-    CaptureBackendError,
-    CaptureBackendUnavailable,
-    CapturedFrame,
-    DisconnectAfterFramesBackend,
-    GStreamerCaptureBackend,
-    SurfaceRtpStream,
-    SyntheticCaptureBackend,
-)
-from .service import CameraService, RetryController
+from __future__ import annotations
 
-__all__ = [
-    "CameraService",
+from importlib import import_module
+from typing import Any
+
+_BACKEND_EXPORTS = {
     "CaptureBackend",
     "CaptureBackendError",
     "CaptureBackendUnavailable",
@@ -22,5 +14,17 @@ __all__ = [
     "GStreamerCaptureBackend",
     "SurfaceRtpStream",
     "SyntheticCaptureBackend",
-    "RetryController",
-]
+    "V4L2CaptureBackend",
+}
+_SERVICE_EXPORTS = {"CameraService", "RetryController"}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _BACKEND_EXPORTS:
+        return getattr(import_module(".backend", __name__), name)
+    if name in _SERVICE_EXPORTS:
+        return getattr(import_module(".service", __name__), name)
+    raise AttributeError(name)
+
+
+__all__ = sorted(_BACKEND_EXPORTS | _SERVICE_EXPORTS)

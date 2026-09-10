@@ -52,9 +52,10 @@ camera_limits:
 
 cameras:
   front_camera:
-    adapter: v4l2
+    adapter: gstreamer_v4l2
     device_path: /dev/v4l/by-id/usb-purdue-rov-front-camera
     device_path_kind: by_id
+    resolution_tier: by_id
     format: h264
     width: 1920
     height: 1080

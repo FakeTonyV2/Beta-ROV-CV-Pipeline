@@ -12,8 +12,18 @@ from typing import Any, Protocol
 
 from purdue_rov.cv.v1 import frame_index_pb2
 
+from purdue_rov_cv.config.models import CameraConfig, CameraFormat
 from purdue_rov_cv.frame_buffer import PixelFormat
 from purdue_rov_cv.video.mapping import RtpFrameIndexMapper
+
+from .v4l2 import (
+    H264ProfileStatus,
+    ResolvedV4L2Device,
+    V4L2DeviceProbe,
+    exact_caps,
+)
+
+PRODUCTION_RTP_MTU = 1_200
 
 
 class CaptureBackendError(RuntimeError):
@@ -45,8 +55,14 @@ class SurfaceRtpStream:
     payload_type: int
     ssrc: int
     on_frame_index: Callable[[frame_index_pb2.FrameIndex], None]
-    mtu: int = 1_200
+    mtu: int = PRODUCTION_RTP_MTU
     mapper: RtpFrameIndexMapper | None = None
+
+    def __post_init__(self) -> None:
+        if self.mtu != PRODUCTION_RTP_MTU:
+            raise ValueError(f"production RTP MTU must be exactly {PRODUCTION_RTP_MTU}")
+        if not 0 <= self.ssrc <= 0xFFFFFFFF:
+            raise ValueError("RTP SSRC must fit in an unsigned 32-bit integer")
 
 
 class CaptureBackend(Protocol):
@@ -242,7 +258,10 @@ class GStreamerCaptureBackend:
             return
         gst, gst_rtp = self._load_gst()
         try:
-            pipeline = gst.parse_launch(self.pipeline_description())
+            try:
+                pipeline = gst.parse_launch(self.pipeline_description())
+            except Exception as error:
+                raise CaptureBackendUnavailable(f"GStreamer pipeline could not be constructed: {error}") from error
             sink = pipeline.get_by_name("sink")
             source = pipeline.get_by_name("source")
             source_pad = source.get_static_pad("src") if source is not None else None
@@ -277,6 +296,11 @@ class GStreamerCaptureBackend:
             result = pipeline.set_state(gst.State.PLAYING)
             if result == gst.StateChangeReturn.FAILURE:
                 raise CaptureBackendError("simulated GStreamer pipeline failed to enter PLAYING")
+            _state_result, current, pending = pipeline.get_state(2_000_000_000)
+            if current != gst.State.PLAYING:
+                raise CaptureBackendError(
+                    f"GStreamer pipeline did not reach PLAYING (current={current!s}, pending={pending!s})"
+                )
         except Exception:
             self.stop()
             raise
@@ -304,10 +328,14 @@ class GStreamerCaptureBackend:
             return None
         buffer = sample.get_buffer()
         caps = sample.get_caps()
+        if buffer is None or caps is None or caps.get_size() < 1:
+            raise CaptureBackendError("appsink sample lacks a buffer or negotiated caps")
         structure = caps.get_structure(0)
         width = int(structure.get_value("width"))
         height = int(structure.get_value("height"))
         raw_format = str(structure.get_value("format"))
+        if width != self.width or height != self.height:
+            raise CaptureBackendError(f"appsink negotiated {width}x{height}; expected exact {self.width}x{self.height}")
         if raw_format != "BGR":
             raise CaptureBackendError(f"appsink negotiated unsupported format {raw_format!r}")
         mapped, info = buffer.map(self._gst.MapFlags.READ)
@@ -317,9 +345,13 @@ class GStreamerCaptureBackend:
             data = bytes(info.data)
         finally:
             buffer.unmap(info)
-        if height <= 0 or len(data) % height:
+        if width <= 0 or height <= 0 or not data or len(data) % height:
             raise CaptureBackendError("GStreamer frame size cannot be represented by an integral stride")
         stride = len(data) // height
+        if stride < width * 3:
+            raise CaptureBackendError(
+                f"GStreamer BGR frame stride {stride} is smaller than the required {width * 3} bytes"
+            )
         with self._timestamp_lock:
             timestamps = self._timestamps.pop(int(buffer.pts), None)
         if timestamps is None:
@@ -377,6 +409,257 @@ class GStreamerCaptureBackend:
                 failures.append(f"pipeline NULL confirmation failed: {type(error).__name__}: {error}")
         if failures:
             raise CaptureBackendError("; ".join(failures))
+
+
+class V4L2CaptureBackend(GStreamerCaptureBackend):
+    """Production UVC/V4L2 capture using the Phase 6 lifecycle.
+
+    Resolution and exact tuple validation happen before every build, including
+    reconnects. The stable configured path is never replaced with an enumerated
+    device selected by the application.
+    """
+
+    def __init__(
+        self,
+        camera_id: str,
+        camera: CameraConfig,
+        *,
+        surface_stream: SurfaceRtpStream | None = None,
+        device_probe: V4L2DeviceProbe | None = None,
+        time_ns: Callable[[], int] = time.time_ns,
+        monotonic_ns: Callable[[], int] = time.monotonic_ns,
+    ) -> None:
+        super().__init__(
+            camera.width,
+            camera.height,
+            camera.frame_rate,
+            surface_stream=surface_stream,
+            time_ns=time_ns,
+            monotonic_ns=monotonic_ns,
+        )
+        self.camera_id = camera_id
+        self.camera = camera
+        self.device_probe = device_probe or V4L2DeviceProbe()
+        self.resolved_device: ResolvedV4L2Device | None = None
+        self.h264_profile_status = H264ProfileStatus.UNVALIDATED
+        self.h264_profile_detail = "pipeline has not started"
+
+    def _source(self) -> str:
+        if self.resolved_device is None:
+            # Useful for deterministic construction tests; start() always
+            # replaces this with the verified target.
+            assert self.camera.device_path is not None
+            device = self.camera.device_path
+        else:
+            device = self.resolved_device.resolved_path
+        return f'v4l2src name=device_source device="{device}" do-timestamp=true ! {exact_caps(self.camera)} '
+
+    @staticmethod
+    def _cv_branch(decoder: str) -> str:
+        decode = f"! {decoder.strip()} " if decoder.strip() else ""
+        return (
+            "capture_tee. ! queue name=cv_queue max-size-buffers=1 max-size-bytes=0 "
+            "max-size-time=0 leaky=downstream "
+            f"{decode}! videoconvert ! video/x-raw,format=BGR "
+            "! appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false "
+        )
+
+    def pipeline_description(self) -> str:
+        source = self._source()
+        stream = self.surface_stream
+        if self.camera.format is CameraFormat.H264:
+            base = source + "! h264parse ! identity name=source ! tee name=capture_tee "
+            cv = self._cv_branch("avdec_h264 ")
+            if stream is None:
+                return base + cv
+            rtp = (
+                "capture_tee. ! queue name=rtp_queue max-size-buffers=2 max-size-bytes=0 "
+                "max-size-time=0 leaky=downstream ! identity name=encoder "
+                f"! rtph264pay name=pay pt={stream.payload_type} mtu={stream.mtu} config-interval=1 "
+                f"ssrc={stream.ssrc & 0xFFFFFFFF} ! udpsink name=udp_sink host={stream.host} port={stream.port} "
+                "sync=false async=false"
+            )
+            return base + cv + rtp
+        if self.camera.format is CameraFormat.MJPEG:
+            base = source + "! identity name=source ! tee name=capture_tee "
+            cv = self._cv_branch("jpegdec ")
+            if stream is None:
+                return base + cv
+            rtp = (
+                "capture_tee. ! queue name=rtp_queue max-size-buffers=2 max-size-bytes=0 "
+                "max-size-time=0 leaky=downstream ! identity name=encoder "
+                f"! rtpjpegpay name=pay pt={stream.payload_type} mtu={stream.mtu} "
+                f"ssrc={stream.ssrc & 0xFFFFFFFF} ! udpsink name=udp_sink host={stream.host} port={stream.port} "
+                "sync=false async=false"
+            )
+            return base + cv + rtp
+
+        base = source + "! identity name=source ! tee name=capture_tee "
+        cv = self._cv_branch("")
+        if stream is None:
+            return base + cv
+        if not self.camera.allow_software_encode:
+            raise ValueError("raw surface streaming requires allow_software_encode=true")
+        rtp = (
+            "capture_tee. ! queue name=rtp_queue max-size-buffers=2 max-size-bytes=0 "
+            "max-size-time=0 leaky=downstream ! videoconvert "
+            f"! x264enc name=encoder tune=zerolatency speed-preset=ultrafast key-int-max={self.camera.frame_rate} "
+            "bframes=0 byte-stream=true ! h264parse "
+            f"! rtph264pay name=pay pt={stream.payload_type} mtu={stream.mtu} config-interval=1 "
+            f"ssrc={stream.ssrc & 0xFFFFFFFF} ! udpsink name=udp_sink host={stream.host} port={stream.port} "
+            "sync=false async=false"
+        )
+        return base + cv + rtp
+
+    def _verify_negotiated_mode(self) -> None:
+        source = self._pipeline.get_by_name("source") if self._pipeline is not None else None
+        pad = source.get_static_pad("src") if source is not None else None
+        caps = pad.get_current_caps() if pad is not None else None
+        if caps is None or caps.get_size() < 1:
+            raise CaptureBackendError("negotiated source caps are unavailable after the pipeline reached PLAYING")
+        structure = caps.get_structure(0)
+        expected_media_type = {
+            CameraFormat.H264: "video/x-h264",
+            CameraFormat.MJPEG: "image/jpeg",
+            CameraFormat.YUYV: "video/x-raw",
+            CameraFormat.NV12: "video/x-raw",
+        }[self.camera.format]
+        media_type = str(structure.get_name())
+        if media_type != expected_media_type:
+            raise CaptureBackendError(
+                f"GStreamer negotiated media type {media_type!r}; expected {expected_media_type!r}"
+            )
+        width = int(structure.get_value("width"))
+        height = int(structure.get_value("height"))
+        fraction = structure.get_value("framerate")
+        numerator = getattr(fraction, "num", getattr(fraction, "numerator", None))
+        denominator = getattr(fraction, "denom", getattr(fraction, "denominator", None))
+        if numerator is None or denominator is None:
+            raise CaptureBackendError("GStreamer negotiated source caps without an exact frame rate")
+        numerator = int(numerator)
+        denominator = int(denominator)
+        if (width, height, numerator, denominator) != (
+            self.camera.width,
+            self.camera.height,
+            self.camera.frame_rate,
+            1,
+        ):
+            raise CaptureBackendError("GStreamer negotiated a mode different from the validated exact V4L2 tuple")
+        if self.camera.format in {CameraFormat.YUYV, CameraFormat.NV12}:
+            expected_format = "YUY2" if self.camera.format is CameraFormat.YUYV else "NV12"
+            negotiated_format = str(structure.get_value("format"))
+            if negotiated_format != expected_format:
+                raise CaptureBackendError(
+                    f"GStreamer negotiated raw format {negotiated_format!r}; expected {expected_format!r}"
+                )
+        if self.camera.format is not CameraFormat.H264:
+            self.h264_profile_detail = "not an H.264 source"
+            return
+        profile = structure.get_value("profile")
+        if profile is None:
+            self.h264_profile_status = H264ProfileStatus.UNVALIDATED
+            self.h264_profile_detail = "driver/parser did not expose an H.264 profile"
+        elif str(profile).lower() in {"baseline", "constrained-baseline", "main", "high"}:
+            self.h264_profile_status = H264ProfileStatus.UNVALIDATED
+            self.h264_profile_detail = (
+                f"negotiated profile={profile}; B-frames, keyframe interval, and bitrate were not verified"
+            )
+        else:
+            self.h264_profile_status = H264ProfileStatus.FAILED
+            self.h264_profile_detail = f"unsupported negotiated profile={profile}"
+            raise CaptureBackendError(self.h264_profile_detail)
+
+    def _verify_instantiated_properties(self) -> None:
+        if self._pipeline is None:
+            raise CaptureBackendError("physical pipeline is unavailable for property verification")
+
+        def element(name: str) -> Any:
+            value = self._pipeline.get_by_name(name)
+            if value is None:
+                raise CaptureBackendError(f"physical pipeline lacks required element {name}")
+            return value
+
+        cv_queue = element("cv_queue")
+        sink = element("sink")
+        source = element("device_source")
+        if self.resolved_device is None:
+            raise CaptureBackendError("physical device identity was lost before property verification")
+        expectations = (
+            (source, "device", str(self.resolved_device.resolved_path)),
+            (source, "do-timestamp", True),
+            (cv_queue, "max-size-buffers", 1),
+            (cv_queue, "max-size-bytes", 0),
+            (cv_queue, "max-size-time", 0),
+            (sink, "max-buffers", 1),
+            (sink, "drop", True),
+            (sink, "sync", False),
+        )
+        for target, name, expected in expectations:
+            actual = target.get_property(name)
+            if actual != expected:
+                raise CaptureBackendError(f"pipeline property {name}={actual!r}; expected {expected!r}")
+        if "downstream" not in str(cv_queue.get_property("leaky")).lower() and int(cv_queue.get_property("leaky")) != 2:
+            raise CaptureBackendError("CV queue is not downstream-leaky")
+        if self.surface_stream is None:
+            return
+        rtp_queue = element("rtp_queue")
+        pay = element("pay")
+        udp_sink = element("udp_sink")
+        stream_expectations: tuple[tuple[Any, str, object], ...] = (
+            (rtp_queue, "max-size-buffers", 2),
+            (rtp_queue, "max-size-bytes", 0),
+            (rtp_queue, "max-size-time", 0),
+            (pay, "pt", self.surface_stream.payload_type),
+            (pay, "mtu", PRODUCTION_RTP_MTU),
+            (pay, "ssrc", self.surface_stream.ssrc),
+            (udp_sink, "host", self.surface_stream.host),
+            (udp_sink, "port", self.surface_stream.port),
+            (udp_sink, "sync", False),
+            (udp_sink, "async", False),
+        )
+        for target, name, expected_value in stream_expectations:
+            actual = target.get_property(name)
+            if actual != expected_value:
+                raise CaptureBackendError(f"pipeline property {name}={actual!r}; expected {expected_value!r}")
+        if (
+            "downstream" not in str(rtp_queue.get_property("leaky")).lower()
+            and int(rtp_queue.get_property("leaky")) != 2
+        ):
+            raise CaptureBackendError("RTP queue is not downstream-leaky")
+        if self.camera.format is not CameraFormat.MJPEG and pay.get_property("config-interval") != 1:
+            raise CaptureBackendError("H.264 RTP config-interval is not 1")
+        if self.camera.format in {CameraFormat.YUYV, CameraFormat.NV12}:
+            encoder = element("encoder")
+            for name, expected in (
+                ("key-int-max", self.camera.frame_rate),
+                ("bframes", 0),
+                ("byte-stream", True),
+            ):
+                actual = encoder.get_property(name)
+                if actual != expected:
+                    raise CaptureBackendError(f"software encoder property {name}={actual!r}; expected {expected!r}")
+
+    def start(self) -> None:
+        if self.running:
+            return
+        report = self.device_probe.validate(self.camera_id, self.camera, open_mode=False)
+        self.resolved_device = report.device
+        try:
+            super().start()
+            self._verify_instantiated_properties()
+            self._verify_negotiated_mode()
+        except BaseException:
+            try:
+                self.stop()
+            except Exception:
+                pass
+            raise
+
+    def stop(self) -> None:
+        try:
+            super().stop()
+        finally:
+            self.resolved_device = None
 
 
 class SyntheticCaptureBackend:
@@ -464,6 +747,8 @@ __all__ = [
     "CapturedFrame",
     "DisconnectAfterFramesBackend",
     "GStreamerCaptureBackend",
+    "PRODUCTION_RTP_MTU",
     "SyntheticCaptureBackend",
     "SurfaceRtpStream",
+    "V4L2CaptureBackend",
 ]

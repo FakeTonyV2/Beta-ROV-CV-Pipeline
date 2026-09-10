@@ -179,6 +179,20 @@ class BrokerRuntimeEvidenceProvider:
             return None
         return raw not in {"0", "0x0"}
 
+    @staticmethod
+    def _video_counter_deltas(
+        first: diagnostics_pb2.DiagnosticStatus | None,
+        latest: diagnostics_pb2.DiagnosticStatus,
+    ) -> tuple[int, int, int]:
+        first_packets = 0 if first is None else int(first.video.rtp_packets_received)
+        first_decoded = 0 if first is None else int(first.video.decoded_frames)
+        first_hits = 0 if first is None else int(first.video.frame_index_hits)
+        return (
+            max(0, int(latest.video.rtp_packets_received) - first_packets),
+            max(0, int(latest.video.decoded_frames) - first_decoded),
+            max(0, int(latest.video.frame_index_hits) - first_hits),
+        )
+
     def __call__(self, config: AppConfig, duration_seconds: float) -> dict[str, object]:
         context = zmq.Context()
         socket: zmq.Socket[bytes] = context.socket(zmq.SUB)
@@ -196,6 +210,7 @@ class BrokerRuntimeEvidenceProvider:
         arrivals: dict[str, list[float]] = {camera_id: [] for camera_id in readers}
         last_frame_numbers: dict[str, int] = {}
         health: dict[str, tuple[diagnostics_pb2.DiagnosticStatus, float]] = {}
+        first_health: dict[str, diagnostics_pb2.DiagnosticStatus] = {}
         cpu_samples: list[float] = []
         temperatures: list[float] = []
         psutil.cpu_percent(interval=None)
@@ -246,6 +261,7 @@ class BrokerRuntimeEvidenceProvider:
                     if validated.envelope.payload_type != "diagnostic_status_v1":
                         continue
                     payload = diagnostics_pb2.DiagnosticStatus.FromString(validated.envelope.payload)
+                    first_health.setdefault(payload.source_id, payload)
                     health[payload.source_id] = (payload, now)
                 if now >= next_resource_sample:
                     cpu_samples.append(float(psutil.cpu_percent(interval=None)))
@@ -274,7 +290,7 @@ class BrokerRuntimeEvidenceProvider:
                 len(values) / elapsed if elapsed > 0 else 0.0,
                 maximum_gap_ms,
                 camera_id in last_frame_numbers and bool(values),
-                elapsed if camera_id in last_frame_numbers and bool(values) else 0.0,
+                elapsed if camera_id in last_frame_numbers and bool(values) and maximum_gap_ms <= 500.0 else 0.0,
             )
         freshness = max(2.0, 2 * config.diagnostics.publish_interval_ms / 1_000.0)
         fresh_health = {
@@ -300,10 +316,12 @@ class BrokerRuntimeEvidenceProvider:
             if status is None:
                 continue
             states[f"video_receiver:{camera_id}"] = from_wire_component_state(status.state)
-            streams[camera_id] = int(status.video.rtp_packets_received) > 0
+            first_status = first_health.get(f"video_receiver_{camera.stream_index}")
+            packet_delta, decoded_delta, hit_delta = self._video_counter_deltas(first_status, status)
+            streams[camera_id] = packet_delta > 0
             correlations[camera_id] = CorrelationMeasurement(
-                int(status.video.decoded_frames),
-                int(status.video.frame_index_hits),
+                decoded_delta,
+                hit_delta,
             )
         recorder = fresh_health.get("recorder")
         if recorder is not None:
@@ -439,7 +457,12 @@ class LocalSystemPreflightProbe:
         camera_probe: dict[str, CameraProbeResult] = {}
         for key, camera in config.cameras.items():
             try:
-                camera_probe[key] = self.hardware_probe.probe_camera(key, camera)
+                result = self.hardware_probe.probe_camera(key, camera)
+                camera_probe[key] = result
+                if not result.backend_supported or not result.probe_executed:
+                    detail = result.detail or f"camera probe for {key} is unavailable"
+                    unavailable["PFL-008"] = detail
+                    unavailable["PFL-009"] = detail
             except Exception as error:
                 unavailable["PFL-008"] = f"USB probe could not execute: {type(error).__name__}: {error}"
                 unavailable["PFL-009"] = f"camera-mode probe could not execute: {type(error).__name__}: {error}"
@@ -503,7 +526,7 @@ class LocalSystemPreflightProbe:
                     measurement.configured_fps,
                     measurement.achieved_fps,
                     measurement.maximum_gap_ms,
-                    result.capture_tuple_supported,
+                    result.capture_tuple_supported and result.mode_opened,
                     measurement.simultaneous_seconds,
                 )
             else:
@@ -511,7 +534,7 @@ class LocalSystemPreflightProbe:
                     config.cameras[key].frame_rate,
                     0.0,
                     float("inf"),
-                    result.capture_tuple_supported,
+                    result.capture_tuple_supported and result.mode_opened,
                     0.0,
                 )
         try:
@@ -556,10 +579,16 @@ class LocalSystemPreflightProbe:
             state_mapping["operator"] = ComponentState.RUNNING
         expected_components = set(_required_component_states(config))
         missing = tuple(sorted(expected_components - set(state_mapping)))
+        all_camera_probes_executed = bool(camera_probe) and all(
+            result.backend_supported and result.probe_executed for result in camera_probe.values()
+        )
+        hardware_check_ids = {"PFL-008", "PFL-009", "PFL-016", "PFL-017"}
+        if self.runtime_evidence is not None:
+            hardware_check_ids.update({"PFL-010", "PFL-011", "PFL-012", "PFL-013", "PFL-014"})
         hardware_evidence = {
             check_id: EvidenceKind.HARDWARE_VERIFIED
-            for check_id in ("PFL-008", "PFL-009", "PFL-016", "PFL-017")
-            if check_id not in unavailable
+            for check_id in hardware_check_ids
+            if check_id not in unavailable and (check_id not in {"PFL-008", "PFL-009"} or all_camera_probes_executed)
         }
         return ProbeSnapshot(
             self._hashes(config),

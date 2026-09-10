@@ -3,7 +3,7 @@
 The repository includes the Phase 1–3 wire, configuration, and runtime contracts,
 Phase 4's real ZeroMQ data broker and control router, and Phase 5's isolated
 production module runner and Echo reference task.
-It also includes Phase 6's simulated GStreamer camera service and canonical
+It also includes Phase 6's camera service with Phase 10 production UVC/V4L2 capture and canonical
 lock-free shared-memory triple buffer, plus Phase 7's per-camera surface RTP
 receiver, validated `FrameIndex` subscriber, and bounded frame-correlation
 fan-out. Surface-enabled camera services use the same source-boundary identity
@@ -107,7 +107,7 @@ Phase 7.5 tc/netem, slow-consumer, evidence, cleanup, and coverage gates.
 Before a mission, run the Pi preflight with the deployed camera paths, for example:
 
 ```bash
-python scripts/verify_platform.py --tether eth0 --camera /dev/video0
+rov-cv config validate config/mission.yaml --probe-hardware
 ```
 
 The platform preflight exits non-zero for unsafe thermal, memory, storage, camera,

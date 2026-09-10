@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from threading import RLock, Thread
 from typing import Protocol
 
-from purdue_rov_cv.config.models import AppConfig, CameraConfig
+from purdue_rov_cv.config.models import AppConfig, CameraConfig, CameraFormat
 from purdue_rov_cv.config.ports import StreamAllocation, derive_stream_allocation
 from purdue_rov_cv.runtime.json_logging import StructuredJsonLogger
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
@@ -133,6 +133,7 @@ class VideoReceiverService:
                 on_decoded=cb.on_decoded,
                 on_invalid_decoded=cb.on_invalid_decoded,
                 on_encoded=cb.on_encoded,
+                source_format=(CameraFormat.MJPEG if camera.format is CameraFormat.MJPEG else CameraFormat.H264),
                 monotonic_ns=monotonic_ns,
             )
         )

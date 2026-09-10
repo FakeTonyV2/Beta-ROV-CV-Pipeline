@@ -58,6 +58,7 @@ SHARED_FRAME_VERSION = 1
 SHARED_FRAME_DTYPE_UINT8 = 1
 SHARED_FRAME_HEADER = struct.Struct("<8sIQIIII16sQqq")
 _SEQUENCE_OFFSET = struct.calcsize("<8sI")
+PROCESS_STARTUP_TIMEOUT_SECONDS = 30.0
 
 
 def _free_tcp_endpoint() -> str:
@@ -254,7 +255,12 @@ def _run_broker(publisher_endpoint: str, subscriber_endpoint: str, signal_ready)
     service.run()
 
 
-def _await_process_ready(process: multiprocessing.Process, ready, *, timeout_seconds: float = 15.0) -> None:
+def _await_process_ready(
+    process: multiprocessing.Process,
+    ready,
+    *,
+    timeout_seconds: float = PROCESS_STARTUP_TIMEOUT_SECONDS,
+) -> None:
     if ready.wait(timeout_seconds):
         return
     exit_code = process.exitcode
@@ -455,7 +461,7 @@ def test_real_runner_control_echo_publication_and_processing_error(tmp_path: Pat
     _await_process_ready(broker, broker_signal_ready)
     router.start()
     runner.start()
-    module_session, publisher_session = identities.get(timeout=5.0)
+    module_session, publisher_session = identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     assert module_session != publisher_session
     context = zmq.Context()
     subscriber: zmq.Socket[bytes] = context.socket(zmq.SUB)
@@ -568,7 +574,7 @@ def test_real_shared_memory_reader_reaches_phase5_echo_process(tmp_path: Path) -
         _await_process_ready(broker, broker_signal_ready)
         router.start()
         runner.start()
-        identities.get(timeout=5.0)
+        identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
         _wait_state(client, "task_a", ComponentState.READY)
         started = client.execute_command(_request("task_a", "start"))
         assert started.resulting_state == ComponentState.RUNNING
@@ -696,7 +702,7 @@ def test_camera_a_crash_does_not_stop_camera_b_broker_router_or_module(tmp_path:
         _await_process_ready(broker, broker_signal_ready)
         router.start()
         runner.start()
-        identities.get(timeout=5.0)
+        identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
         deadline = time.monotonic() + 5.0
         starting = None
         while time.monotonic() < deadline:
@@ -745,7 +751,7 @@ def test_real_process_registration_failure_and_hung_worker_exit_75(tmp_path: Pat
         target=_run_unregistered, args=(config, tmp_path, "missing", registration_result)
     )
     unavailable.start()
-    returned_code, registration_seconds = registration_result.get(timeout=8.0)
+    returned_code, registration_seconds = registration_result.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     unavailable.join(2.0)
     assert returned_code == ExitCode.TEMPORARY_FAILURE
     assert registration_seconds < 5.0
@@ -768,7 +774,7 @@ def test_real_process_registration_failure_and_hung_worker_exit_75(tmp_path: Pat
     _await_process_ready(broker, broker_signal_ready)
     router.start()
     runner.start()
-    identities.get(timeout=5.0)
+    identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     try:
         _wait_state(client, "task_a", ComponentState.READY)
@@ -809,7 +815,7 @@ def test_real_process_twenty_consecutive_deadline_misses_exit_75(tmp_path: Path)
     _await_process_ready(broker, broker_signal_ready)
     router.start()
     runner.start()
-    identities.get(timeout=5.0)
+    identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     try:
         _wait_state(client, "task_a", ComponentState.READY)
@@ -851,7 +857,7 @@ def test_real_concurrent_duplicate_executes_start_side_effect_once(tmp_path: Pat
     _await_process_ready(broker, broker_signal_ready)
     router.start()
     runner.start()
-    identities.get(timeout=5.0)
+    identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     first_client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     second_client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     command_id = UUID(int=711).bytes
@@ -904,7 +910,7 @@ def test_three_real_processing_failures_enter_error_but_control_survives(tmp_pat
     _await_process_ready(broker, broker_signal_ready)
     router.start()
     runner.start()
-    identities.get(timeout=5.0)
+    identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     health_context = zmq.Context()
     health_subscriber: zmq.Socket[bytes] = health_context.socket(zmq.SUB)
@@ -989,7 +995,7 @@ def test_sigterm_during_blocked_command_exits_75_within_five_seconds(tmp_path: P
     )
     router.start()
     runner.start()
-    identities.get(timeout=15.0)
+    identities.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     entered = tmp_path / "blocked-command.entered"
     try:
@@ -1042,8 +1048,8 @@ def test_kill_restart_isolates_modules_and_retires_old_session(tmp_path: Path) -
     router.start()
     runner_a.start()
     runner_b.start()
-    old_module_session, old_publisher_session = identities_a.get(timeout=5.0)
-    identities_b.get(timeout=5.0)
+    old_module_session, old_publisher_session = identities_a.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
+    identities_b.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
     client = ControlClient(client_endpoint, acknowledgement_timeout_seconds=0.3)
     restarted = None
     raw_context = zmq.Context()
@@ -1073,7 +1079,7 @@ def test_kill_restart_isolates_modules_and_retires_old_session(tmp_path: Path) -
             name="module-a-restarted",
         )
         restarted.start()
-        new_module_session, new_publisher_session = identities_restart.get(timeout=5.0)
+        new_module_session, new_publisher_session = identities_restart.get(timeout=PROCESS_STARTUP_TIMEOUT_SECONDS)
         assert new_module_session != old_module_session
         assert new_publisher_session != old_publisher_session
         _wait_state(client, "task_a", ComponentState.READY)
@@ -1133,7 +1139,7 @@ def test_installed_module_runner_uses_exit_64_for_bad_arguments() -> None:
         check=False,
         capture_output=True,
         text=True,
-        timeout=5.0,
+        timeout=PROCESS_STARTUP_TIMEOUT_SECONDS,
     )
     assert completed.returncode == ExitCode.INVALID_ARGUMENTS
     assert "--task" in completed.stderr

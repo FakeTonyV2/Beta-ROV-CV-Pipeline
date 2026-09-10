@@ -14,7 +14,13 @@ import pytest
 import zmq
 
 from purdue_rov_cv.camera import CameraService, GStreamerCaptureBackend, SurfaceRtpStream
-from purdue_rov_cv.config.models import CameraAdapter, CameraConfig, CameraFormat, CameraPathKind
+from purdue_rov_cv.config.models import (
+    CameraAdapter,
+    CameraConfig,
+    CameraFormat,
+    CameraPathKind,
+    CameraResolutionTier,
+)
 from purdue_rov_cv.messaging.broker import DataBrokerService
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.runtime.shutdown import ShutdownToken, install_signal_handlers
@@ -25,6 +31,7 @@ from purdue_rov_cv.video import (
     FrameIndexCache,
     FrameIndexPublisher,
     FrameIndexSubscriber,
+    GStreamerRtpReceiver,
     GStreamerRtpSender,
     VideoReceiverService,
 )
@@ -40,7 +47,18 @@ def _require_gstreamer() -> None:
         from gi.repository import Gst, GstRtp  # noqa: F401
 
         Gst.init(None)
-        for element in ("x264enc", "rtph264pay", "rtpjitterbuffer", "rtph264depay", "avdec_h264"):
+        for element in (
+            "x264enc",
+            "rtph264pay",
+            "rtpjitterbuffer",
+            "rtph264depay",
+            "avdec_h264",
+            "jpegenc",
+            "rtpjpegpay",
+            "rtpjpegdepay",
+            "jpegparse",
+            "jpegdec",
+        ):
             if Gst.ElementFactory.find(element) is None:
                 pytest.fail(f"required real GStreamer element is unavailable: {element}")
     except (ImportError, ValueError) as error:
@@ -61,6 +79,8 @@ def _camera(stream_index: int) -> CameraConfig:
         adapter=CameraAdapter.V4L2,
         device_path=Path("/dev/simulated"),
         device_path_kind=CameraPathKind.FALLBACK,
+        resolution_tier=CameraResolutionTier.ID_PATH,
+        stable_identity="test-simulated-camera",
         format=CameraFormat.H264,
         width=160,
         height=120,
@@ -68,7 +88,7 @@ def _camera(stream_index: int) -> CameraConfig:
         stream_index=stream_index,
         stream_to_surface=True,
         cv_enabled=True,
-        allow_software_encode=True,
+        allow_software_encode=False,
         slot_capacity_bytes=160 * 120 * 3,
     )
 
@@ -203,7 +223,7 @@ def test_production_camera_source_broker_receiver_exact_identity() -> None:
                 receiver.allocation.rtp_payload_type,
                 int.from_bytes(session[:4], byteorder="big"),
                 publish,
-                mtu=300,
+                mtu=1200,
                 mapper=mapper,
             ),
         )
@@ -249,6 +269,57 @@ def test_production_camera_source_broker_receiver_exact_identity() -> None:
     assert camera_result.completed and not camera_result.failures
     assert receiver_result.completed and not receiver_result.failures
     assert not broker_thread.is_alive()
+
+
+@pytest.mark.timeout(15)
+def test_real_mjpeg_rtp_receiver_decodes_the_phase10_sender_format() -> None:
+    _require_gstreamer()
+    import gi
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+
+    Gst.init(None)
+    camera = _camera(27).model_copy(update={"format": CameraFormat.MJPEG})
+    allocation_port = 5000 + 2 * camera.stream_index
+    allocation_payload = 96 + camera.stream_index
+    packets: list[tuple[int, int, int]] = []
+    decoded = []
+    encoded = []
+    invalid: list[str] = []
+    receiver = GStreamerRtpReceiver(
+        allocation_port,
+        allocation_payload,
+        on_packet=lambda ssrc, timestamp, observed: packets.append((ssrc, timestamp, observed)),
+        on_packet_lost=lambda _count: None,
+        on_decoded=decoded.append,
+        on_invalid_decoded=invalid.append,
+        on_encoded=encoded.append,
+        source_format=CameraFormat.MJPEG,
+    )
+    sender = Gst.parse_launch(
+        "videotestsrc is-live=true num-buffers=20 pattern=smpte "
+        "! video/x-raw,width=160,height=120,framerate=20/1 "
+        "! videoconvert ! video/x-raw,format=I420 ! jpegenc ! rtpjpegpay pt=123 mtu=1200 ssrc=4242 "
+        f"! udpsink host=127.0.0.1 port={allocation_port} sync=false async=false"
+    )
+    try:
+        receiver.start()
+        time.sleep(0.2)
+        assert sender.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and not decoded:
+            receiver.check_bus()
+            time.sleep(0.01)
+        assert packets
+        assert encoded
+        assert decoded
+        assert decoded[0].pixel_format == "BGR"
+        assert not invalid
+    finally:
+        sender.set_state(Gst.State.NULL)
+        sender.get_state(1_000_000_000)
+        receiver.stop()
 
 
 @pytest.mark.timeout(30)

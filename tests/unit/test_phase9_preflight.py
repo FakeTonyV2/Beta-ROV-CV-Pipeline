@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from purdue_rov.cv.v1 import control_pb2
+from purdue_rov.cv.v1 import control_pb2, diagnostics_pb2
 
 from purdue_rov_cv.camera import CaptureBackendError, SyntheticCaptureBackend
 from purdue_rov_cv.cli import main as cli_main
@@ -19,6 +19,7 @@ from purdue_rov_cv.config.probes import CameraProbeResult
 from purdue_rov_cv.messaging.client import ControlClient
 from purdue_rov_cv.preflight import (
     CHECK_SPECS,
+    BrokerRuntimeEvidenceProvider,
     CameraMeasurement,
     CheckResult,
     CheckStatus,
@@ -546,6 +547,27 @@ def test_invalid_camera_mode_crosses_the_production_hardware_probe_boundary() ->
     assert checks["PFL-008"].status is CheckStatus.PASS
     assert checks["PFL-009"].status is CheckStatus.FAIL
     assert checks["PFL-009"].evidence is EvidenceKind.HARDWARE_VERIFIED
+
+
+def test_runtime_video_evidence_uses_current_window_counter_deltas() -> None:
+    first = diagnostics_pb2.DiagnosticStatus(source_id="video_receiver_0")
+    first.video.rtp_packets_received = 100
+    first.video.decoded_frames = 80
+    first.video.frame_index_hits = 76
+    unchanged = diagnostics_pb2.DiagnosticStatus.FromString(first.SerializeToString())
+    assert BrokerRuntimeEvidenceProvider._video_counter_deltas(first, unchanged) == (0, 0, 0)
+
+    latest = diagnostics_pb2.DiagnosticStatus.FromString(first.SerializeToString())
+    latest.video.rtp_packets_received = 140
+    latest.video.decoded_frames = 100
+    latest.video.frame_index_hits = 95
+    assert BrokerRuntimeEvidenceProvider._video_counter_deltas(first, latest) == (40, 20, 19)
+
+    reset = diagnostics_pb2.DiagnosticStatus(source_id="video_receiver_0")
+    reset.video.rtp_packets_received = 2
+    reset.video.decoded_frames = 1
+    reset.video.frame_index_hits = 1
+    assert BrokerRuntimeEvidenceProvider._video_counter_deltas(first, reset) == (0, 0, 0)
 
 
 @pytest.mark.parametrize(

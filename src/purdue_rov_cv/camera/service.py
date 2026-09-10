@@ -8,7 +8,7 @@ from threading import Event, Thread
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from purdue_rov_cv.config.models import CameraConfig
+from purdue_rov_cv.config.models import CameraAdapter, CameraConfig
 from purdue_rov_cv.frame_buffer import FrameWrite, SharedMemoryFrameWriter
 from purdue_rov_cv.runtime.json_logging import StructuredJsonLogger
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
@@ -16,7 +16,14 @@ from purdue_rov_cv.runtime.rate_limit import WarningRateLimiter
 from purdue_rov_cv.runtime.shutdown import ShutdownCoordinator, ShutdownResult, ShutdownToken, install_signal_handlers
 from purdue_rov_cv.runtime.state import ComponentState, ComponentStateMachine
 
-from .backend import CaptureBackend, CaptureBackendError, CapturedFrame
+from .backend import (
+    CaptureBackend,
+    CaptureBackendError,
+    CaptureBackendUnavailable,
+    CapturedFrame,
+    V4L2CaptureBackend,
+)
+from .v4l2 import V4L2ConfigurationError
 
 FRAME_TIMEOUT_NS = 2_000_000_000
 POLL_SECONDS = 0.100
@@ -104,7 +111,15 @@ class CameraService:
     def _observe_state(self, _result: object) -> None:
         self.metrics.set_metadata("state", self.state_machine.state.value)
 
-    def _log(self, level: str, event_code: str, message: str, *, frame_number: int | None = None) -> None:
+    def _log(
+        self,
+        level: str,
+        event_code: str,
+        message: str,
+        *,
+        frame_number: int | None = None,
+        context: dict[str, object] | None = None,
+    ) -> None:
         if self.logger is not None:
             self.logger.log(
                 level,
@@ -113,7 +128,7 @@ class CameraService:
                 camera_id=self.camera_id,
                 camera_session_id=self.session_uuid,
                 frame_number=frame_number,
-                context={"state": self.state_machine.state.value},
+                context={"state": self.state_machine.state.value, **(context or {})},
             )
 
     def _start_backend(self, *, rebuild: bool) -> bool:
@@ -123,6 +138,19 @@ class CameraService:
         try:
             candidate = self.backend_factory()
             candidate.start()
+        except (V4L2ConfigurationError, CaptureBackendUnavailable) as error:
+            if candidate is not None:
+                try:
+                    candidate.stop()
+                except Exception as teardown_error:
+                    self._log(
+                        "ERROR",
+                        "CAMERA_PIPELINE_TEARDOWN_FAILED",
+                        f"configuration-failure cleanup failed: {type(teardown_error).__name__}: {teardown_error}",
+                    )
+            if isinstance(error, CaptureBackendUnavailable):
+                raise V4L2ConfigurationError(str(error)) from error
+            raise
         except Exception as error:
             if candidate is not None:
                 try:
@@ -136,13 +164,30 @@ class CameraService:
             self._schedule_retry(error)
             return False
         self._backend = candidate
-        self._retry.succeeded()
+        if self.config.adapter is CameraAdapter.V4L2:
+            self.metrics.set_gauge("usb_device_present", True)
         self._last_accepted_ns = self._monotonic_ns()
         if self.state_machine.state is ComponentState.DEGRADED:
             self.state_machine.transition_to(ComponentState.READY)
         elif self.state_machine.state is ComponentState.STARTING:
             self.state_machine.transition_to(ComponentState.READY)
-        self._log("INFO", "CAMERA_PIPELINE_READY", "simulated capture pipeline is ready")
+        identity_context: dict[str, object] = {}
+        if isinstance(candidate, V4L2CaptureBackend) and candidate.resolved_device is not None:
+            resolved = candidate.resolved_device
+            identity_context = {
+                "backend": self.config.adapter.value,
+                "configured_path": str(resolved.configured_path),
+                "resolved_path": str(resolved.resolved_path),
+                "device_path_kind": resolved.path_kind.value,
+                "resolution_tier": resolved.resolution_tier.value,
+                "physical_identity": resolved.stable_identity,
+                "configured_mode": (
+                    f"{self.config.format.value} {self.config.width}x{self.config.height}@{self.config.frame_rate}"
+                ),
+                "h264_profile_status": candidate.h264_profile_status.value,
+                "h264_profile_detail": candidate.h264_profile_detail,
+            }
+        self._log("INFO", "CAMERA_PIPELINE_READY", "capture pipeline is ready", context=identity_context)
         return True
 
     def _schedule_retry(self, error: BaseException) -> None:
@@ -187,6 +232,8 @@ class CameraService:
     def _lose_backend(self, error: BaseException, *, timed_out: bool) -> None:
         backend = self._backend
         self._backend = None
+        if self.config.adapter is CameraAdapter.V4L2:
+            self.metrics.set_gauge("usb_device_present", False)
         if backend is not None:
             try:
                 backend.stop()
@@ -229,6 +276,7 @@ class CameraService:
             self._log("ERROR", "CAMERA_FRAME_REJECTED", str(error), frame_number=frame_number)
             return False
         self._next_frame_number = frame_number + 1
+        self._retry.succeeded()
         self._last_accepted_ns = self._monotonic_ns()
         self.metrics.increment("frames_received")
         self.metrics.set_gauge("current_width", captured.width)

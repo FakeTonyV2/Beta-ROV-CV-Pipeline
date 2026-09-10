@@ -8,7 +8,7 @@ debug_snapshots: {enabled: true, maximum_rate_hz: 1.0, maximum_width: 640, maxim
 recording: {enabled: false, directory: /tmp/purdue-rov-cv/recordings, video_segment_seconds: 300, minimum_free_space_gib: 10, structured: {chunk_size_bytes: 1048576, compression: zstd}}
 camera_limits: {maximum_configured: 16, maximum_active: 12}
 cameras:
-  usb_webcam: {adapter: v4l2, device_path: /dev/purdue-rov-cv/usb_webcam, device_path_kind: fallback, format: mjpeg, width: 1280, height: 720, frame_rate: 30, stream_index: 0, stream_to_surface: true, cv_enabled: true, allow_software_encode: true, slot_capacity_bytes: 2764800}
+  usb_webcam: {adapter: gstreamer_v4l2, device_path: /dev/purdue-rov-cv/usb_webcam, device_path_kind: fallback, resolution_tier: id_path, stable_identity: "pci-0000:00:14.0-usb-0:1.2:1.0", format: mjpeg, width: 1280, height: 720, frame_rate: 30, stream_index: 0, stream_to_surface: true, cv_enabled: true, allow_software_encode: false, slot_capacity_bytes: 2764800}
 tasks:
   gate_detection:
     module_class: purdue_rov_cv.modules.gate.GateDetector

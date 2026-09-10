@@ -16,7 +16,13 @@ import numpy as np
 import zmq
 from purdue_rov.cv.v1 import bounding_box_pb2, control_pb2
 
-from purdue_rov_cv.config.models import CameraAdapter, CameraConfig, CameraFormat, CameraPathKind
+from purdue_rov_cv.config.models import (
+    CameraAdapter,
+    CameraConfig,
+    CameraFormat,
+    CameraPathKind,
+    CameraResolutionTier,
+)
 from purdue_rov_cv.messaging import broker as broker_module
 from purdue_rov_cv.messaging import router as router_module
 from purdue_rov_cv.messaging.broker import DataBrokerService
@@ -62,6 +68,8 @@ def _camera(stream_index: int) -> CameraConfig:
         adapter=CameraAdapter.V4L2,
         device_path=Path("/dev/simulated"),
         device_path_kind=CameraPathKind.FALLBACK,
+        resolution_tier=CameraResolutionTier.ID_PATH,
+        stable_identity="test-simulated-camera",
         format=CameraFormat.H264,
         width=160,
         height=120,
@@ -69,7 +77,7 @@ def _camera(stream_index: int) -> CameraConfig:
         stream_index=stream_index,
         stream_to_surface=True,
         cv_enabled=True,
-        allow_software_encode=True,
+        allow_software_encode=False,
         slot_capacity_bytes=160 * 120 * 3,
     )
 

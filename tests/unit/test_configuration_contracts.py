@@ -132,7 +132,12 @@ def test_pydantic_strictness_and_enums(mutate):
         ),
         (
             lambda data: data["cameras"]["front_camera"].update(
-                {"device_path_kind": "fallback", "device_path": "/dev/v4l/by-id/camera"}
+                {
+                    "device_path_kind": "fallback",
+                    "device_path": "/dev/v4l/by-id/camera",
+                    "resolution_tier": "id_path",
+                    "stable_identity": "test-path",
+                }
             ),
             "CAMERA_PATH_KIND_MISMATCH",
         ),
@@ -160,21 +165,69 @@ def test_static_validation_reports_stable_issue_codes(mutate, code):
 def test_valid_fallback_path_does_not_need_hardware():
     data = _data()
     data["cameras"]["front_camera"].update(
-        {"device_path_kind": "fallback", "device_path": "/dev/purdue-rov-cv/front_camera"}
+        {
+            "device_path_kind": "fallback",
+            "device_path": "/dev/purdue-rov-cv/front_camera",
+            "resolution_tier": "id_path",
+            "stable_identity": "test-path",
+        }
     )
     assert parse_config_data(data).cameras["front_camera"].device_path.as_posix() == "/dev/purdue-rov-cv/front_camera"
 
 
-def test_documented_oakd_variation_is_valid_static_configuration():
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/dev/purdue-rov-cv/nested/front_camera",
+        "/dev/v4l/by-id/nested/camera",
+        '/dev/v4l/by-id/camera"-injection',
+    ],
+)
+def test_stable_camera_paths_require_an_exact_safe_direct_link(path: str) -> None:
+    data = _data()
+    camera = data["cameras"]["front_camera"]
+    camera["device_path"] = path
+    if path.startswith("/dev/purdue"):
+        camera.update(
+            {
+                "device_path_kind": "fallback",
+                "resolution_tier": "id_path",
+                "stable_identity": "test-path",
+            }
+        )
+    with pytest.raises(ConfigStaticValidationError):
+        parse_config_data(data)
+
+
+def test_physical_port_fallback_requires_a_human_label() -> None:
     data = _data()
     data["cameras"]["front_camera"].update(
         {
-            "adapter": "oakd",
-            "device_path": "/dev/v4l/by-id/usb-luxonis-oakd",
+            "device_path": "/dev/purdue-rov-cv/front_camera",
+            "device_path_kind": "fallback",
+            "resolution_tier": "physical_port",
+            "stable_identity": "pci-port-path",
+        }
+    )
+    with pytest.raises(ConfigSchemaError, match="physical_port_label"):
+        parse_config_data(data)
+    data["cameras"]["front_camera"]["physical_port_label"] = "ROV hub port 3"
+    assert parse_config_data(data).cameras["front_camera"].physical_port_label == "ROV hub port 3"
+
+
+def test_documented_depthai_variation_uses_mxid_not_v4l2_path():
+    data = _data()
+    data["cameras"]["front_camera"].update(
+        {
+            "adapter": "depthai",
+            "device_path": None,
+            "device_path_kind": None,
+            "resolution_tier": None,
+            "mxid": "18443010D1AA0C1200",
         }
     )
 
-    assert parse_config_data(data).cameras["front_camera"].adapter.value == "oakd"
+    assert parse_config_data(data).cameras["front_camera"].adapter.value == "depthai"
 
 
 @pytest.mark.parametrize(
@@ -205,6 +258,7 @@ def test_port_derivation_collision_and_more_than_eight_cameras():
         camera.update(
             {"stream_index": index, "device_path_kind": "fallback", "device_path": f"/dev/purdue-rov-cv/{camera_id}"}
         )
+        camera.update({"resolution_tier": "id_path", "stable_identity": f"test-path-{index}"})
         data["cameras"][camera_id] = camera
     assert len(parse_config_data(data).cameras) == 10
     data["cameras"]["camera_1"]["stream_index"] = 0

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from purdue_rov_cv.config.issues import ConfigurationError
 from purdue_rov_cv.config.loader import load_config
+from purdue_rov_cv.config.models import CameraAdapter
 from purdue_rov_cv.config.ports import derive_stream_allocation
 from purdue_rov_cv.frame_buffer import LiveOwnerError, SharedMemoryInvalid, UnsafeStaleSegmentError
 from purdue_rov_cv.runtime.exit_codes import ExitCode
@@ -27,8 +28,10 @@ from .backend import (
     GStreamerCaptureBackend,
     SurfaceRtpStream,
     SyntheticCaptureBackend,
+    V4L2CaptureBackend,
 )
 from .service import CameraService
+from .v4l2 import V4L2ConfigurationError, V4L2ModeUnsupported
 
 
 class _CameraArgumentParser(argparse.ArgumentParser):
@@ -87,9 +90,14 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
         backend_factory = simulated_backend_factory
         publisher = None
         mapper = None
+    elif args.simulate_gstreamer:
+        publisher = None
+        mapper = None
     else:
         publisher = None
         mapper = None
+        if camera.adapter is not CameraAdapter.V4L2:
+            raise ValueError(f"camera backend {camera.adapter.value!r} is not implemented by Phase 10")
     if not args.simulate and camera.stream_to_surface:
         allocation = derive_stream_allocation(args.camera, camera.stream_index)
         publisher = FrameIndexPublisher(
@@ -105,21 +113,25 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
         def streaming_backend_factory() -> CaptureBackend:
             nonlocal inject_disconnect
             assert publisher is not None and mapper is not None
-            backend = GStreamerCaptureBackend(
-                camera.width,
-                camera.height,
-                camera.frame_rate,
-                surface_stream=SurfaceRtpStream(
-                    args.camera,
-                    session.bytes,
-                    str(config.network.surface_ip),
-                    allocation.rtp_port,
-                    allocation.rtp_payload_type,
-                    int.from_bytes(session.bytes[:4], byteorder="big"),
-                    publisher.publish,
-                    mapper=mapper,
-                ),
+            surface = SurfaceRtpStream(
+                args.camera,
+                session.bytes,
+                str(config.network.surface_ip),
+                allocation.rtp_port,
+                allocation.rtp_payload_type,
+                int.from_bytes(session.bytes[:4], byteorder="big"),
+                publisher.publish,
+                mapper=mapper,
             )
+            if args.simulate_gstreamer:
+                backend: CaptureBackend = GStreamerCaptureBackend(
+                    camera.width,
+                    camera.height,
+                    camera.frame_rate,
+                    surface_stream=surface,
+                )
+            else:
+                backend = V4L2CaptureBackend(args.camera, camera, surface_stream=surface)
             if inject_disconnect:
                 inject_disconnect = False
                 assert args.disconnect_after_frames is not None
@@ -133,7 +145,11 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
 
         def local_backend_factory() -> CaptureBackend:
             nonlocal inject_disconnect
-            backend = GStreamerCaptureBackend(camera.width, camera.height, camera.frame_rate)
+            backend: CaptureBackend
+            if args.simulate_gstreamer:
+                backend = GStreamerCaptureBackend(camera.width, camera.height, camera.frame_rate)
+            else:
+                backend = V4L2CaptureBackend(args.camera, camera)
             if inject_disconnect:
                 inject_disconnect = False
                 assert args.disconnect_after_frames is not None
@@ -167,6 +183,12 @@ def camera_entrypoint(argv: list[str] | None = None) -> int:
         return int(ExitCode.INVALID_CONFIGURATION)
     except (LiveOwnerError, UnsafeStaleSegmentError, SharedMemoryInvalid, ValueError) as error:
         print(f"{ErrorCode.CONFIG_INVALID} <camera>: {type(error).__name__}: {error}", file=sys.stderr)
+        return int(ExitCode.INVALID_CONFIGURATION)
+    except V4L2ModeUnsupported as error:
+        print(f"{ErrorCode.CAMERA_MODE_UNSUPPORTED} <camera>: {error}", file=sys.stderr)
+        return int(ExitCode.INVALID_CONFIGURATION)
+    except V4L2ConfigurationError as error:
+        print(f"{ErrorCode.CONFIG_INVALID} <camera>: {error}", file=sys.stderr)
         return int(ExitCode.INVALID_CONFIGURATION)
     except OSError as error:
         print(f"{ErrorCode.INTERNAL_ERROR} <camera>: {type(error).__name__}: {error}", file=sys.stderr)

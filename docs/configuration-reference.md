@@ -52,8 +52,10 @@ not meet the configuration.
 | `recording.enabled`, `directory`, `video_segment_seconds`, `minimum_free_space_gib`, `structured.*` | boolean, absolute path, `300`, `10`, `1048576`, `zstd` | Unsupported | Lexically safe absolute paths plus exact adopted Phase 8 constants. | Runtime enforces 300-second MKV segments, 10-GiB start/2-GiB stop protection, and 1-MiB zstd MCAP chunks. | `/var/lib/purdue-rov-cv/recordings` |
 | `camera_limits.maximum_configured`, `maximum_active` | positive integers | Static | `maximum_active` cannot exceed configured; there is no implicit eight-camera cap. RTP payload types allow stream indexes 0-31. | None. | `16`, `8` |
 | `cameras.<camera_id>` | dynamic keyed mapping | Static | Key uses shared identifier grammar; additions/removals require restart. | Every configured camera is preflighted. | `front_camera:` |
-| `cameras.*.adapter` | `v4l2` or `oakd` | Static | Enum. | The current Linux probe requires the selected path to resolve to a V4L2 video device, then checks its listed capture modes. | `v4l2` |
-| `cameras.*.device_path`, `device_path_kind` | lexical absolute Linux path; `by_id` / `fallback` | Static | Reject `/dev/videoN`, traversal, empty parts, and trailing separators. `by_id` is under `/dev/v4l/by-id/`; `fallback` is `/dev/purdue-rov-cv/<camera_id>`. | Preflight checks existence, symlink stability, and resolution to a V4L2 `/dev/videoN` character device. | `/dev/v4l/by-id/usb-camera` |
+| `cameras.*.adapter` | `gstreamer_v4l2`, `depthai`, or `realsense` | Static | Explicit enum; legacy `v4l2`/`oakd` values are rejected. | Phase 10 probes only `gstreamer_v4l2`; other physical backends report unavailable until their owning phase. | `gstreamer_v4l2` |
+| `cameras.*.device_path`, `device_path_kind` | V4L2-only absolute path; `by_id` / `fallback` | Static | Required only for `gstreamer_v4l2`. Reject `/dev/videoN`, traversal, empty parts, and trailing separators. `by_id` is under `/dev/v4l/by-id/`; `fallback` is exactly `/dev/purdue-rov-cv/<camera_id>`. | Resolves the symlink, verifies a video character device and provisioning metadata. Mismatch is configuration failure/exit 78; temporary absence is reconnectable. | `/dev/v4l/by-id/usb-camera` |
+| `cameras.*.resolution_tier`, `stable_identity`, `physical_port_label` | `by_id`, `id_path`, `physical_port`; strings | Static | `by_id` kind requires tier `by_id` and derives identity from the link. Fallback requires tier `id_path` or `physical_port` plus nonblank identity. `physical_port_label` is required only for tier 3. | Runtime udev metadata must match all configured values. Tier 3 is port-dependent and the labeled port is part of the audited deployment identity. | `physical_port`, `pci-...-usb-0:1.2:1.0`, `ROV hub port 3` |
+| `cameras.*.mxid`, `serial_number` | string | Static | `depthai` requires only `mxid`; `realsense` requires only `serial_number`; irrelevant identity fields are forbidden. | No Phase 10 V4L2 probing is applied. | `18443010D1AA0C1200` |
 | `cameras.*.format`, `width`, `height`, `frame_rate`, `allow_software_encode`, `slot_capacity_bytes` | enum, bounded dimensions/rate, boolean, positive integer | Static | H264/MJPEG/YUYV/NV12; width <=7680, height <=4320, FPS <=240. | Preflight reads `v4l2-ctl --list-formats-ext` and requires the exact format, resolution, and frame rate. | `h264`, `1920`, `1080`, `30` |
 | `cameras.*.stream_index`, `stream_to_surface`, `cv_enabled` | nonnegative integer, booleans | Static | Indexes are unique; derive RTP `5000+2i`, RTCP `RTP+1`, PT `96+i`; PT must be 96-127. Active means CV or surface streaming. | Preflight briefly binds derived UDP ports, then closes them. | `0`, `true`, `true` |
 | `tasks.<task_id>` | dynamic keyed mapping | Static except rows below | Key grammar; additions/removals require restart. | None. | `gate_detection:` |
@@ -70,11 +72,11 @@ The protocol permits 32 distinct stream indexes (payload types `96` through
 `127`). Increase the active limit only after bandwidth, encoder, CPU, and memory
 testing on the actual Pi.
 
-`v4l2` is the standard Linux Video4Linux2 camera interface used by generic
-USB/UVC cameras and many video devices. `oakd` identifies a Luxonis OAK-D
-integration; the current contract still expects its selected video stream to
-resolve to a V4L2 device. A future non-V4L2 OAK-D path needs a separate probe,
-not a weakened check.
+`gstreamer_v4l2` is the production Linux Video4Linux2 backend for generic
+USB/UVC cameras. `depthai` identifies a Luxonis device by MXID and `realsense`
+reserves a serial-number identity boundary. Those backends never require or
+accept a V4L2 device path, and their acquisition implementations are not part
+of Phase 10.
 
 `device_path` is the stable name the pipeline opens. It must never be a volatile
 enumerated name such as `/dev/video0`, because USB enumeration may change after
@@ -82,6 +84,11 @@ reconnect. `device_path_kind: by_id` selects the udev hardware-identity link
 under `/dev/v4l/by-id/`; `fallback` selects a deployment-provisioned stable link
 under `/dev/purdue-rov-cv/<camera_id>`. The paths describe link/provisioning
 strategy, not a different video format.
+
+Hardware-aware validation also verifies that a by-id link is present in the
+resolved target's udev `DEVLINKS`, enumerates exact V4L2 tuples, and opens the
+requested parser, decoder, conversion, and bounded-sink path. Advertisement
+alone is not a successful mode-open result.
 
 `stream_index` is a stable media-stream identity, independent of YAML mapping
 order. For index `i`, the system derives RTP `5000 + 2i`, RTCP `5001 + 2i`, and

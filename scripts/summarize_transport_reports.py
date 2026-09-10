@@ -57,8 +57,10 @@ def _validated_matrix(payload: dict[str, Any], scenario: str, path: Path) -> tup
         valid = isinstance(value, str) and value == scenario if column == "Scenario" else _valid_cell(value)
         if not valid:
             failures.append(f"{path}: invalid or missing matrix cell {column!r}")
-            value = scenario if column == "Scenario" else "FAIL — invalid or missing scenario evidence"
-        row[column] = value
+            row[column] = scenario if column == "Scenario" else "FAIL — invalid or missing scenario evidence"
+        else:
+            assert isinstance(value, str)
+            row[column] = value
     row["artifact"] = str(path)
     return row, failures
 

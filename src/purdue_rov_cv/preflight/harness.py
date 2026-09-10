@@ -245,9 +245,10 @@ class Phase9ProcessHarness:
             "camera_limits": {"maximum_configured": 16, "maximum_active": 8},
             "cameras": {
                 "front_camera": {
-                    "adapter": "v4l2",
+                    "adapter": "gstreamer_v4l2",
                     "device_path": "/dev/v4l/by-id/phase9-simulated-camera",
                     "device_path_kind": "by_id",
+                    "resolution_tier": "by_id",
                     "format": "h264",
                     "width": 64,
                     "height": 48,

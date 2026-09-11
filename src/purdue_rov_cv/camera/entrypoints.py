@@ -30,6 +30,7 @@ from .backend import (
     SyntheticCaptureBackend,
     V4L2CaptureBackend,
 )
+from .health import CameraHealthPublisher
 from .service import CameraService
 from .v4l2 import V4L2ConfigurationError, V4L2ModeUnsupported
 
@@ -167,6 +168,16 @@ def camera_main(argv: list[str] | None = None) -> ExitCode:
         logger=logger,
         install_signals=True,
         frame_index_publisher=publisher,
+    )
+    service.attach_health_publisher(
+        CameraHealthPublisher(
+            config.messaging.broker.publisher_endpoint,
+            args.camera,
+            interval_ms=config.diagnostics.publish_interval_ms,
+            metrics=metrics,
+            state_machine=service.state_machine,
+            shutdown=service.shutdown.token,
+        )
     )
     service.run()
     return ExitCode.CLEAN_SHUTDOWN

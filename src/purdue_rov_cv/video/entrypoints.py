@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Never
 from uuid import uuid4
@@ -32,6 +33,7 @@ def _parser() -> _ReceiverArgumentParser:
     parser.add_argument("--config", type=Path, help="mission YAML")
     parser.add_argument("--approximate-debug", action="store_true", help="label wrap-aware near-RTP matches")
     parser.add_argument("--record-session", help="record encoded H.264 into this shared safe session identifier")
+    parser.add_argument("--record-session-file", type=Path, help="read a recorder-owned shared session identifier")
     return parser
 
 
@@ -41,7 +43,22 @@ def video_receiver_main(argv: list[str] | None = None) -> ExitCode:
     if args.camera not in config.cameras:
         raise ValueError(f"unknown configured camera: {args.camera}")
     camera = config.cameras[args.camera]
-    if args.record_session is not None and camera.format is CameraFormat.MJPEG:
+    if args.record_session is not None and args.record_session_file is not None:
+        raise ValueError("choose either --record-session or --record-session-file")
+    record_session = args.record_session
+    if args.record_session_file is not None and config.recording.enabled:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                record_session = args.record_session_file.read_text(encoding="ascii").strip()
+            except OSError:
+                time.sleep(0.05)
+                continue
+            if record_session:
+                break
+        else:
+            raise ValueError(f"recording session file was not ready: {args.record_session_file}")
+    if record_session is not None and camera.format is CameraFormat.MJPEG:
         raise ValueError("MJPEG surface receive is supported, but Phase 8 encoded recording accepts H.264 only")
     session = uuid4()
     logger = configure_json_logger(
@@ -52,9 +69,9 @@ def video_receiver_main(argv: list[str] | None = None) -> ExitCode:
     )
     encoded_recorder = None
     metrics = RuntimeMetrics()
-    if args.record_session is not None:
+    if record_session is not None:
         encoded_recorder = EncodedMatroskaRecorder(
-            VideoSegmentPaths(config.recording.directory, args.record_session, args.camera),
+            VideoSegmentPaths(config.recording.directory, record_session, args.camera),
             segment_seconds=config.recording.video_segment_seconds,
             metrics=metrics,
         )

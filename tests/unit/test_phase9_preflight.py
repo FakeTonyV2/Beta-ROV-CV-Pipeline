@@ -97,7 +97,41 @@ def test_harness_readiness_wait_fails_fast_when_child_exits(tmp_path: Path) -> N
 
 def test_check_matrix_is_complete_stable_and_explanatory() -> None:
     assert [item.check_id for item in CHECK_SPECS] == [f"PFL-{number:03d}" for number in range(1, 21)]
-    assert all(item.name and item.probe and item.inputs and item.calculation and item.fatal for item in CHECK_SPECS)
+    assert all(item.name and item.probe and item.inputs and item.calculation for item in CHECK_SPECS)
+    assert {item.check_id for item in CHECK_SPECS if not item.fatal} == {"PFL-016", "PFL-017"}
+
+
+def test_thermal_observations_warn_without_blocking_mission() -> None:
+    config, snapshot = _evaluated()
+    snapshot = replace(snapshot, maximum_temperature_c=95.0, thermally_throttled=True)
+    report = make_report(evaluate_checks(config, snapshot))
+    checks = _by_id(report.checks)
+    assert checks["PFL-016"].status is CheckStatus.WARNING
+    assert checks["PFL-017"].status is CheckStatus.WARNING
+    assert report.overall_result == "PASS"
+    assert report.mission_enable
+
+
+def test_memory_and_root_disk_are_hard_gates() -> None:
+    config, snapshot = _evaluated()
+    exact = make_report(
+        evaluate_checks(
+            config,
+            replace(
+                snapshot,
+                available_memory_bytes=512 * 1024**2,
+                root_free_bytes=2 * GIB,
+            ),
+        )
+    )
+    low_memory = make_report(evaluate_checks(config, replace(snapshot, available_memory_bytes=512 * 1024**2 - 1)))
+    low_disk = make_report(evaluate_checks(config, replace(snapshot, root_free_bytes=2 * GIB - 1)))
+    assert low_memory.overall_result == "FAIL"
+    assert not _by_id(low_memory.checks)["PFL-015"].passed
+    assert low_disk.overall_result == "FAIL"
+    assert not _by_id(low_disk.checks)["PFL-018"].passed
+    assert _by_id(exact.checks)["PFL-015"].passed
+    assert _by_id(exact.checks)["PFL-018"].passed
 
 
 def test_nominal_check_results_and_report_representations_are_deterministic() -> None:
@@ -206,6 +240,23 @@ def test_clock_offset_boundary_freshness_and_three_failure_rule() -> None:
     now[0] = 203.0
     reset = monitor.observe(ClockSample(True, True, 0.0, 203.0))
     assert reset.consecutive_failures == 0 and reset.cross_device_latency_valid
+
+
+def test_clock_recovery_after_invalidation_requires_three_valid_checks() -> None:
+    now = [0.0]
+    monitor = ClockMonitor(monotonic=lambda: now[0])
+    monitor.observe(ClockSample(True, True, 0.0, 0.0))
+    for second in (1.0, 2.0, 3.0):
+        now[0] = second
+        invalid = monitor.observe(ClockSample(False, False, 20.0, second))
+    assert not invalid.cross_device_latency_valid
+    for second in (4.0, 5.0):
+        now[0] = second
+        recovering = monitor.observe(ClockSample(True, True, 0.0, second))
+        assert not recovering.synchronized
+    now[0] = 6.0
+    recovered = monitor.observe(ClockSample(True, True, 0.0, 6.0))
+    assert recovered.synchronized and recovered.cross_device_latency_valid
 
 
 def test_clock_service_uses_five_second_monotonic_cadence() -> None:

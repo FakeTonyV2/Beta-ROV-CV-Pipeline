@@ -62,6 +62,8 @@ def module_runner_main(argv: list[str] | None = None) -> ExitCode:
     if args.task not in config.tasks:
         raise ValueError(f"unknown configured task: {args.task}")
     task = config.tasks[args.task]
+    if not task.enabled:
+        raise ValueError(f"configured task is disabled: {args.task}")
     module = load_module(task.module_class)
     publisher_sequence = PublisherSequence()
     logger = configure_json_logger(

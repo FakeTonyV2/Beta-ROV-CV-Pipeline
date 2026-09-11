@@ -24,6 +24,9 @@ purdue-cv-recorder = "purdue_rov_cv.recording.entrypoints:recorder_entrypoint"
 purdue-cv-replay = "purdue_rov_cv.replay.entrypoints:replay_entrypoint"
 purdue-cv-replay-broker = "purdue_rov_cv.replay.entrypoints:replay_broker_entrypoint"
 purdue-cv-video-replay = "purdue_rov_cv.replay.entrypoints:video_replay_entrypoint"
+purdue-cv-validate-environment = "purdue_rov_cv.deployment.entrypoints:environment_validator_entrypoint"
+purdue-cv-system-health = "purdue_rov_cv.deployment.entrypoints:system_health_entrypoint"
+purdue-cv-surface-health = "purdue_rov_cv.deployment.entrypoints:surface_health_entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src", "generated/python"]
@@ -59,6 +62,7 @@ files = [
   "src/purdue_rov_cv/recording",
   "src/purdue_rov_cv/replay",
   "src/purdue_rov_cv/preflight",
+  "src/purdue_rov_cv/deployment",
   "src/purdue_rov_cv/cli.py",
 ]
 explicit_package_bases = true

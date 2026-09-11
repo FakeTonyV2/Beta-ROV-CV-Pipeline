@@ -13,6 +13,7 @@ CORE_PARTS = frozenset(
     {
         "camera",
         "config",
+        "deployment",
         "frame_buffer",
         "messaging",
         "module_runner",

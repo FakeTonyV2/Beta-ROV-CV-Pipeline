@@ -45,6 +45,15 @@ class ReadySignal(Protocol):
     def set(self) -> None: ...
 
 
+class StartAuthorizer(Protocol):
+    def authorize(self, *, startup_dependencies_satisfied: bool) -> tuple[bool, str]: ...
+
+
+class _MissingStartAuthorizer:
+    def authorize(self, *, startup_dependencies_satisfied: bool) -> tuple[bool, str]:
+        return False, "mission START authorizer is not configured"
+
+
 _FINAL_COMMAND_STATUSES = frozenset(
     {
         control_pb2.COMMAND_STATUS_COMPLETED,
@@ -103,6 +112,7 @@ class ControlRouterService:
         *,
         device_id: str,
         allowed_module_ids: Collection[str],
+        start_authorizer: StartAuthorizer | None = None,
         heartbeat_expiry_seconds: float = HEARTBEAT_EXPIRY_SECONDS,
         metrics: RuntimeMetrics | None = None,
         logger: StructuredJsonLogger | None = None,
@@ -115,6 +125,7 @@ class ControlRouterService:
         self.module_endpoint = module_endpoint
         self.device_id = device_id
         self.allowed_module_ids = frozenset(allowed_module_ids)
+        self.start_authorizer = start_authorizer or _MissingStartAuthorizer()
         self.metrics = metrics or RuntimeMetrics(monotonic=monotonic)
         self.logger = logger
         self.warning_limiter = warning_limiter or WarningRateLimiter(monotonic=monotonic)
@@ -141,12 +152,14 @@ class ControlRouterService:
         warning_limiter: WarningRateLimiter | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         install_signals: bool = False,
+        start_authorizer: StartAuthorizer | None = None,
     ) -> ControlRouterService:
         return cls(
             config.messaging.control.client_endpoint,
             config.messaging.control.module_endpoint,
             device_id=config.device.device_id,
-            allowed_module_ids=config.tasks,
+            allowed_module_ids={task_id for task_id, task in config.tasks.items() if task.enabled},
+            start_authorizer=start_authorizer,
             heartbeat_expiry_seconds=heartbeat_expiry_seconds,
             metrics=metrics,
             logger=logger,
@@ -418,6 +431,25 @@ class ControlRouterService:
                 "target does not advertise this command",
             )
             return
+        if command_type == "start":
+            dependencies_ready = all(
+                (registered := self.registry.resolve(module_id)) is not None and registered.available
+                for module_id in self.allowed_module_ids
+            )
+            try:
+                authorized, reason = self.start_authorizer.authorize(startup_dependencies_satisfied=dependencies_ready)
+            except Exception as error:
+                authorized = False
+                reason = f"mission authorization failed closed: {type(error).__name__}: {error}"
+            if not authorized:
+                self._reject_client(
+                    client_socket,
+                    message.routing_identity,
+                    request,
+                    ErrorCode.INVALID_STATE_TRANSITION,
+                    reason,
+                )
+                return
         try:
             self._send(module_socket, [record.routing_identity, COMMAND_REQUEST, message.payload])
         except zmq.Again:

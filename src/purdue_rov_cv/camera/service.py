@@ -39,6 +39,12 @@ class FrameIndexBackgroundPublisher(Protocol):
     def run(self) -> None: ...
 
 
+class CameraHealthBackgroundPublisher(Protocol):
+    ready: Event
+
+    def run(self) -> None: ...
+
+
 class RetryController:
     def __init__(self) -> None:
         self.consecutive_failures = 0
@@ -83,6 +89,8 @@ class CameraService:
         self.shutdown = ShutdownCoordinator(state_machine=self.state_machine, monotonic=monotonic)
         self.frame_index_publisher = frame_index_publisher
         self._frame_index_thread: Thread | None = None
+        self.health_publisher: CameraHealthBackgroundPublisher | None = None
+        self._health_thread: Thread | None = None
         self.writer = writer_factory(
             camera_id,
             config.slot_capacity_bytes,
@@ -103,6 +111,12 @@ class CameraService:
         self._initialized = False
         self._fps_started = monotonic()
         self._fps_frames = 0
+
+    def attach_health_publisher(self, publisher: CameraHealthBackgroundPublisher) -> None:
+        if self._initialized or self.health_publisher is not None:
+            raise RuntimeError("camera health publisher must be attached exactly once before initialization")
+        self.health_publisher = publisher
+        self.shutdown.register("camera-health-publisher", self._shutdown_health_publisher, order=25)
 
     @property
     def next_frame_number(self) -> int:
@@ -227,6 +241,15 @@ class CameraService:
             self._frame_index_thread.start()
             if not self.frame_index_publisher.ready.wait(1.0):
                 raise CaptureBackendError("FrameIndex publisher did not initialize within one second")
+        if self.health_publisher is not None:
+            self._health_thread = Thread(
+                target=self.health_publisher.run,
+                name=f"camera-health-publisher:{self.camera_id}",
+                daemon=True,
+            )
+            self._health_thread.start()
+            if not self.health_publisher.ready.wait(1.0):
+                raise CaptureBackendError("camera health publisher did not initialize within one second")
         self._start_backend(rebuild=False)
 
     def _lose_backend(self, error: BaseException, *, timed_out: bool) -> None:
@@ -340,6 +363,14 @@ class CameraService:
         if thread.is_alive():
             raise CaptureBackendError("FrameIndex publisher did not stop within one second")
 
+    def _shutdown_health_publisher(self) -> None:
+        thread = self._health_thread
+        if thread is None:
+            return
+        thread.join(1.0)
+        if thread.is_alive():
+            raise CaptureBackendError("camera health publisher did not stop within one second")
+
     def close(self) -> ShutdownResult:
         if self.state_machine.state not in {ComponentState.STOPPING, ComponentState.STOPPED}:
             self.shutdown.request("camera service close")
@@ -369,6 +400,7 @@ __all__ = [
     "RETRY_DELAYS_SECONDS",
     "BackendFactory",
     "CameraService",
+    "CameraHealthBackgroundPublisher",
     "FrameIndexBackgroundPublisher",
     "RetryController",
 ]

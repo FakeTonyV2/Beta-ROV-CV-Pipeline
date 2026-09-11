@@ -360,7 +360,7 @@ def test_router_maps_only_again_to_target_send_timeout(monkeypatch: pytest.Monke
         sent.append(frames)
 
     monkeypatch.setattr(service, "_send", fake_send)
-    request = _command()
+    request = _command(command_type="get_status")
     service._handle_client_command(
         client_socket,
         module_socket,

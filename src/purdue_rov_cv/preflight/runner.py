@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from purdue_rov_cv.config.issues import ConfigurationError
-from purdue_rov_cv.config.loader import load_config
+from purdue_rov_cv.config.loader import config_hash, load_config
 
 from .checks import CHECK_SPECS, CheckResult, CheckStatus, EvidenceKind, PreflightReport, evaluate_checks, make_report
 from .probes import PreflightProbe
@@ -42,12 +42,18 @@ def run_preflight(
             EvidenceKind.OBSERVED,
         )
         return make_report((check,), now=now)
+    configuration_sha256 = config_hash(config)
     try:
         snapshot = probe.collect(config, camera_duration_seconds=camera_duration_seconds)
         checks = evaluate_checks(config, snapshot)
     except Exception as error:
-        return make_report((), now=now, execution_error=f"{type(error).__name__}: {error}")
-    return make_report(checks, now=now)
+        return make_report(
+            (),
+            now=now,
+            execution_error=f"{type(error).__name__}: {error}",
+            configuration_sha256=configuration_sha256,
+        )
+    return make_report(checks, now=now, configuration_sha256=configuration_sha256)
 
 
 __all__ = ["run_preflight"]

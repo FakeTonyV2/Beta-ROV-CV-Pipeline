@@ -75,10 +75,10 @@ inputs, exact calculation, measurements, threshold, and actionable reason.
 | PFL-012 | camera metrics | maximum frame gap `<= 500 ms` |
 | PFL-013 | video receiver | each required RTP stream supplies a frame |
 | PFL-014 | `FrameCorrelator` | exact matches/received frames `>= 0.95` |
-| PFL-015 | resource sampler | average CPU `< 85%` |
-| PFL-016 | thermal probe | maximum temperature `< 80 C` |
-| PFL-017 | throttle probe | all throttle flags clear |
-| PFL-018 | `DiskSpaceGuard` | free space `>= 10 * 1024^3` bytes |
+| PFL-015 | resource sampler | available memory `>= 512 MiB` and average CPU `< 85%` |
+| PFL-016 | thermal probe | diagnostic warning at historical `80 C`; non-fatal |
+| PFL-017 | throttle probe | diagnostic throttle observation; non-fatal |
+| PFL-018 | `DiskSpaceGuard` | root free `>= 2 GiB` and recording free `>= 10 GiB` |
 | PFL-019 | module metrics | each enabled module processes `>= 10` frames |
 | PFL-020 | health aggregator | every required component present and none `ERROR` |
 

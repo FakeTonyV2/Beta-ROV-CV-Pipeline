@@ -271,11 +271,16 @@ def _await_process_ready(
 
 
 def _run_router(client_endpoint: str, module_endpoint: str, allowed: set[str]) -> None:
+    class TestStartAuthorizer:
+        def authorize(self, *, startup_dependencies_satisfied: bool) -> tuple[bool, str]:
+            return startup_dependencies_satisfied, "lower-phase module test authorization"
+
     ControlRouterService(
         client_endpoint,
         module_endpoint,
         device_id="rov_pi5",
         allowed_module_ids=allowed,
+        start_authorizer=TestStartAuthorizer(),
         heartbeat_expiry_seconds=0.4,
         install_signals=True,
     ).run()

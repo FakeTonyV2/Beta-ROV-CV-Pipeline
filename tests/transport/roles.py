@@ -126,12 +126,18 @@ def run_router(args: argparse.Namespace, writer: EventWriter) -> None:
         )
 
     router_module.configure_router = observe_router_socket
+
+    class TestStartAuthorizer:
+        def authorize(self, *, startup_dependencies_satisfied: bool) -> tuple[bool, str]:
+            return startup_dependencies_satisfied, "transport test authorization"
+
     try:
         ControlRouterService(
             args.client_endpoint,
             args.module_endpoint,
             device_id="rov_pi5",
             allowed_module_ids={"gate_detection"},
+            start_authorizer=TestStartAuthorizer(),
             install_signals=True,
         ).run()
     finally:

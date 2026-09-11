@@ -120,14 +120,16 @@ def read_preflight_observation(path: Path | None) -> PreflightObservation:
     assert isinstance(exit_code, int)
     assert isinstance(checks, list)
     assert isinstance(decision, bool)
-    check_statuses = [item.get("status") for item in checks if isinstance(item, dict)]
-    consistent_pass = (
-        result == "PASS"
-        and exit_code == 0
-        and decision
-        and len(check_statuses) == 20
-        and all(status == "PASS" for status in check_statuses)
-    )
+    valid_checks = [
+        item
+        for item in checks
+        if isinstance(item, dict)
+        and (
+            item.get("status") == "PASS"
+            or (item.get("status") in {"WARNING", "UNAVAILABLE"} and item.get("fatal") is False)
+        )
+    ]
+    consistent_pass = result == "PASS" and exit_code == 0 and decision and len(checks) == 20 and len(valid_checks) == 20
     consistent_failure = result != "PASS" and exit_code in {1, 2} and not decision
     if not (consistent_pass or consistent_failure):
         return PreflightObservation(False, run_id, "INVALID", exit_code, False, "preflight report fields disagree")

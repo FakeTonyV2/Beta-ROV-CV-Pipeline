@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -29,6 +30,16 @@ from .clock import ChronyClockProbe, ClockMonitor, ClockProbe, ClockSample
 
 class PreflightProbe(Protocol):
     def collect(self, config: AppConfig, *, camera_duration_seconds: float) -> ProbeSnapshot: ...
+
+
+def _counter_delta(
+    first: diagnostics_pb2.DiagnosticStatus | None,
+    latest: diagnostics_pb2.DiagnosticStatus,
+    group: str,
+    field: str,
+) -> int:
+    initial = 0 if first is None else int(getattr(getattr(first, group), field))
+    return max(0, int(getattr(getattr(latest, group), field)) - initial)
 
 
 def _required_component_states(config: AppConfig) -> dict[str, ComponentState]:
@@ -146,6 +157,8 @@ class SimulatedPreflightProbe:
             missing,
             now,
             evidence_by_check={f"PFL-{number:03d}": EvidenceKind.SIMULATED for number in range(2, 21)},
+            available_memory_bytes=1024 * 1024**2,
+            root_free_bytes=4 * GIB,
         )
 
 
@@ -211,6 +224,9 @@ class BrokerRuntimeEvidenceProvider:
         last_frame_numbers: dict[str, int] = {}
         health: dict[str, tuple[diagnostics_pb2.DiagnosticStatus, float]] = {}
         first_health: dict[str, diagnostics_pb2.DiagnosticStatus] = {}
+        camera_events: list[dict[str, object]] = []
+        camera_usb_absent: set[str] = set()
+        camera_restart_observed: set[str] = set()
         cpu_samples: list[float] = []
         temperatures: list[float] = []
         psutil.cpu_percent(interval=None)
@@ -224,7 +240,10 @@ class BrokerRuntimeEvidenceProvider:
             # the normative measurement interval. This is a bounded readiness
             # probe, not part of the measured ten-second soak.
             warmup_deadline = self._monotonic() + 2.0
-            while len(last_frame_numbers) < len(readers) and self._monotonic() < warmup_deadline:
+            while (
+                len(last_frame_numbers) < len(readers) or not set(config.cameras).issubset(first_health)
+            ) and self._monotonic() < warmup_deadline:
+                now = self._monotonic()
                 for camera_id, reader in readers.items():
                     try:
                         if not reader.attached:
@@ -234,8 +253,28 @@ class BrokerRuntimeEvidenceProvider:
                             last_frame_numbers[camera_id] = result.header.frame_number
                     except Exception:
                         reader.close()
+                while socket.poll(0, zmq.POLLIN):
+                    validated = validator.validate(socket.recv_multipart())
+                    if not validated.valid or validated.envelope is None:
+                        continue
+                    if validated.envelope.payload_type != "diagnostic_status_v1":
+                        continue
+                    payload = diagnostics_pb2.DiagnosticStatus.FromString(validated.envelope.payload)
+                    first_health.setdefault(payload.source_id, payload)
+                    health[payload.source_id] = (payload, now)
                 self._wait(0.005)
             started = self._monotonic()
+            for camera_id in config.cameras:
+                baseline_status = first_health.get(camera_id)
+                if baseline_status is not None and not baseline_status.camera.usb_device_present:
+                    camera_usb_absent.add(camera_id)
+                    camera_events.append(
+                        {
+                            "elapsed_seconds": 0.0,
+                            "event": "camera-usb-absent-at-start",
+                            "camera_id": camera_id,
+                        }
+                    )
             deadline = started + duration_seconds
             next_resource_sample = started
             while self._monotonic() < deadline:
@@ -262,6 +301,27 @@ class BrokerRuntimeEvidenceProvider:
                         continue
                     payload = diagnostics_pb2.DiagnosticStatus.FromString(validated.envelope.payload)
                     first_health.setdefault(payload.source_id, payload)
+                    if payload.source_id in config.cameras:
+                        baseline = first_health[payload.source_id]
+                        if not payload.camera.usb_device_present:
+                            camera_usb_absent.add(payload.source_id)
+                            camera_events.append(
+                                {
+                                    "elapsed_seconds": now - started,
+                                    "event": "camera-usb-absent",
+                                    "camera_id": payload.source_id,
+                                }
+                            )
+                        if payload.camera.pipeline_restarts > baseline.camera.pipeline_restarts:
+                            camera_restart_observed.add(payload.source_id)
+                            camera_events.append(
+                                {
+                                    "elapsed_seconds": now - started,
+                                    "event": "camera-pipeline-restart",
+                                    "camera_id": payload.source_id,
+                                    "count": int(payload.camera.pipeline_restarts),
+                                }
+                            )
                     health[payload.source_id] = (payload, now)
                 if now >= next_resource_sample:
                     cpu_samples.append(float(psutil.cpu_percent(interval=None)))
@@ -300,21 +360,65 @@ class BrokerRuntimeEvidenceProvider:
         }
         states: dict[str, ComponentState] = {}
         module_frames: dict[str, int] = {}
+        module_metrics: dict[str, dict[str, int | float]] = {}
         for task_id, task in config.tasks.items():
             if not task.enabled or (status := fresh_health.get(task_id)) is None:
                 continue
+            assert status is not None
             states[f"module:{task_id}"] = from_wire_component_state(status.state)
-            module_frames[task_id] = int(status.module.frames_processed)
+            first_status = first_health.get(task_id)
+
+            module_frames[task_id] = _counter_delta(first_status, status, "module", "frames_processed")
+            module_metrics[task_id] = {
+                "frames_read": _counter_delta(first_status, status, "module", "frames_read"),
+                "frames_processed": module_frames[task_id],
+                "frames_dropped_before_processing": _counter_delta(
+                    first_status, status, "module", "frames_dropped_before_processing"
+                ),
+                "processing_exceptions": _counter_delta(first_status, status, "module", "processing_exceptions"),
+                "processing_deadline_misses": _counter_delta(
+                    first_status, status, "module", "processing_deadline_misses"
+                ),
+                "results_published": _counter_delta(first_status, status, "module", "results_published"),
+                "results_dropped_local_queue": _counter_delta(
+                    first_status, status, "module", "results_dropped_local_queue"
+                ),
+                "zmq_send_dropped": _counter_delta(first_status, status, "module", "zmq_send_dropped"),
+                "average_processing_ms": float(status.module.average_processing_ms),
+                "p95_processing_ms": float(status.module.p95_processing_ms),
+            }
+        camera_metrics: dict[str, dict[str, int | float | bool]] = {}
+        for camera_id in config.cameras:
+            if (status := fresh_health.get(camera_id)) is None:
+                continue
+            states[f"camera:{camera_id}"] = from_wire_component_state(status.state)
+            first_camera_status = first_health.get(camera_id)
+            first_frames = 0 if first_camera_status is None else int(first_camera_status.camera.frames_received)
+            first_timeouts = 0 if first_camera_status is None else int(first_camera_status.camera.frame_timeouts)
+            first_restarts = 0 if first_camera_status is None else int(first_camera_status.camera.pipeline_restarts)
+            first_writes = (
+                0 if first_camera_status is None else int(first_camera_status.camera.shared_memory_write_count)
+            )
+            camera_metrics[camera_id] = {
+                "frames_received": max(0, int(status.camera.frames_received) - first_frames),
+                "frames_per_second": float(status.camera.frames_per_second),
+                "frame_timeouts": max(0, int(status.camera.frame_timeouts) - first_timeouts),
+                "pipeline_restarts": max(0, int(status.camera.pipeline_restarts) - first_restarts),
+                "shared_memory_write_count": max(0, int(status.camera.shared_memory_write_count) - first_writes),
+                "usb_device_present": bool(status.camera.usb_device_present),
+                "usb_disconnect_observed": camera_id in camera_usb_absent,
+                "pipeline_restart_observed": camera_id in camera_restart_observed,
+            }
         streams: dict[str, bool] = {}
         correlations: dict[str, CorrelationMeasurement] = {}
+        video_metrics: dict[str, dict[str, int]] = {}
         for camera_id, camera in config.cameras.items():
-            if cameras[camera_id].opened:
-                states[f"camera:{camera_id}"] = ComponentState.RUNNING
             if not camera.stream_to_surface:
                 continue
             status = fresh_health.get(f"video_receiver_{camera.stream_index}")
             if status is None:
                 continue
+            assert status is not None
             states[f"video_receiver:{camera_id}"] = from_wire_component_state(status.state)
             first_status = first_health.get(f"video_receiver_{camera.stream_index}")
             packet_delta, decoded_delta, hit_delta = self._video_counter_deltas(first_status, status)
@@ -323,6 +427,17 @@ class BrokerRuntimeEvidenceProvider:
                 decoded_delta,
                 hit_delta,
             )
+            first_video = first_health.get(f"video_receiver_{camera.stream_index}")
+
+            video_metrics[camera_id] = {
+                "rtp_packets_received": packet_delta,
+                "rtp_packets_lost": _counter_delta(first_video, status, "video", "rtp_packets_lost"),
+                "decoded_frames": decoded_delta,
+                "frame_index_hits": hit_delta,
+                "frame_index_misses": _counter_delta(first_video, status, "video", "frame_index_misses"),
+                "stream_restarts": _counter_delta(first_video, status, "video", "stream_restarts"),
+                "last_frame_age_ms": int(status.video.last_frame_age_ms),
+            }
         recorder = fresh_health.get("recorder")
         if recorder is not None:
             states["recorder"] = from_wire_component_state(recorder.state)
@@ -332,12 +447,34 @@ class BrokerRuntimeEvidenceProvider:
         throttled = self._thermally_throttled()
         if throttled is None:
             unavailable["PFL-017"] = "the production thermal-throttle status file is unavailable"
+        messaging_metrics: dict[str, dict[str, int]] = {}
+        for source_id, status in fresh_health.items():
+            assert status is not None
+            first_status = first_health.get(source_id)
+
+            messaging_metrics[source_id] = {
+                field: _counter_delta(first_status, status, "messaging", field)
+                for field in (
+                    "messages_sent",
+                    "messages_received",
+                    "invalid_messages",
+                    "unknown_payload_types",
+                    "observed_sequence_gaps",
+                    "reconnect_count",
+                )
+            }
         return {
+            "actual_duration_seconds": elapsed,
+            "events": camera_events,
             "cameras": cameras,
             "component_states": states,
             "rtp_streams": streams,
             "correlations": correlations,
             "module_processed_frames": module_frames,
+            "module_metrics": module_metrics,
+            "camera_metrics": camera_metrics,
+            "video_metrics": video_metrics,
+            "messaging_metrics": messaging_metrics,
             "average_cpu_percent": sum(cpu_samples) / len(cpu_samples) if cpu_samples else 0.0,
             "maximum_temperature_c": max(temperatures) if temperatures else 0.0,
             "thermally_throttled": bool(throttled),
@@ -614,6 +751,8 @@ class LocalSystemPreflightProbe:
             observed_now,
             unavailable,
             hardware_evidence,
+            int(psutil.virtual_memory().available),
+            int(shutil.disk_usage("/").free),
         )
 
 

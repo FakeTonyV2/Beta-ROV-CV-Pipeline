@@ -1,0 +1,27 @@
+[Unit]
+Description=Purdue ROV CV onboard system health
+Wants=chrony.service
+After=network-online.target chrony.service purdue-cv-broker.service purdue-cv-control-router.service
+Requires=purdue-cv-broker.service purdue-cv-control-router.service
+PartOf=purdue-cv-onboard.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=purdue-cv
+Group=purdue-cv
+SupplementaryGroups=video
+ExecStart=/opt/purdue-rov-cv/.venv/bin/purdue-cv-system-health --config /etc/purdue-rov-cv/mission.yaml
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+KillSignal=SIGTERM
+RestartPreventExitStatus=78
+RuntimeDirectory=purdue-rov-cv
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=purdue-rov-cv
+
+[Install]
+WantedBy=purdue-cv-onboard.target

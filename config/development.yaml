@@ -11,7 +11,7 @@ cameras:
   usb_webcam: {adapter: gstreamer_v4l2, device_path: /dev/purdue-rov-cv/usb_webcam, device_path_kind: fallback, resolution_tier: id_path, stable_identity: "pci-0000:00:14.0-usb-0:1.2:1.0", format: mjpeg, width: 1280, height: 720, frame_rate: 30, stream_index: 0, stream_to_surface: true, cv_enabled: true, allow_software_encode: false, slot_capacity_bytes: 2764800}
 tasks:
   gate_detection:
-    module_class: purdue_rov_cv.modules.gate.GateDetector
+    module_class: purdue_rov_cv.modules.echo.EchoModule
     enabled: true
     input_camera: usb_webcam
     execution_target: surface_laptop

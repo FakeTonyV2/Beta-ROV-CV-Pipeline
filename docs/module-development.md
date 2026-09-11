@@ -1,5 +1,29 @@
 # Module development
 
+## Required v1 workflow
+
+1. Define or reuse the versioned protobuf message.
+2. Register its payload type in the canonical payload registry.
+3. Generate and check in Python bindings with `scripts/generate_proto.sh`.
+4. Add protobuf and envelope round-trip tests.
+5. Implement `CVModule`; do not create another runner.
+6. Declare accepted pixel formats and validate source compatibility.
+7. Separate static configuration from the permitted dynamic fields.
+8. Add the task to canonical mission configuration.
+9. Add a deterministic known-input unit test.
+10. Exercise representative recorded video through the production reader.
+11. Set and verify the processing deadline.
+12. Emit standard frame, error, deadline, publish, and health metrics.
+13. Run unit, integration, full, coverage, type, lint, and format checks.
+14. Replay a recorded session through the Phase 8 path.
+15. Run hardware preflight on the intended Pi/camera/model.
+16. Document payload meaning, configuration, limits, and operator behavior.
+
+A module must not bypass the shared frame buffer, envelope builder, payload
+registry, standard publisher, control state machine, configuration validation,
+or health reporting. The reference Echo module follows these boundaries; adding
+an architectural side channel is not a valid extension workflow.
+
 Task implementations subclass `purdue_rov_cv.modules.CVModule`. They implement
 `initialize(context)` and `process(frame)` and may override dynamic configuration
 and lifecycle hooks. `process()` receives a process-private NumPy-backed `Frame`

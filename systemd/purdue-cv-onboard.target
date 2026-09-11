@@ -1,0 +1,7 @@
+[Unit]
+Description=Purdue ROV CV onboard production topology
+Wants=network-online.target chrony.service purdue-cv-broker.service purdue-cv-control-router.service purdue-cv-system-health.service
+After=network-online.target chrony.service
+
+[Install]
+WantedBy=multi-user.target

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Never
 
@@ -25,7 +27,12 @@ class _Parser(argparse.ArgumentParser):
 def recorder_main(argv: list[str] | None = None) -> ExitCode:
     parser = _Parser(prog="purdue-cv-recorder")
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--session", required=True, help="safe recording session identifier")
+    parser.add_argument(
+        "--session",
+        required=True,
+        help="safe recording session identifier; 'auto' creates a UTC timestamped session",
+    )
+    parser.add_argument("--session-file", type=Path, help="publish the selected session for encoded receivers")
     args = parser.parse_args(argv)
     config = load_config(args.config)
     logger = configure_json_logger(
@@ -34,7 +41,17 @@ def recorder_main(argv: list[str] | None = None) -> ExitCode:
         source_id="recorder",
         publisher_session_id=None,
     )
-    service = RecorderService.from_config(config, args.session, logger=logger, install_signals=True)
+    session = datetime.now(timezone.utc).strftime("mission-%Y%m%dT%H%M%SZ") if args.session == "auto" else args.session
+    session_file = args.session_file
+    if session_file is not None:
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = session_file.with_name(f".{session_file.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(session + "\n", encoding="ascii")
+            temporary.replace(session_file)
+        finally:
+            temporary.unlink(missing_ok=True)
+    service = RecorderService.from_config(config, session, logger=logger, install_signals=True)
     service.run()
     return ExitCode.CLEAN_SHUTDOWN
 

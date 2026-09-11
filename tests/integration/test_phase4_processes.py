@@ -31,6 +31,11 @@ from purdue_rov_cv.wire.errors import ErrorCode
 PROCESS_STARTUP_TIMEOUT_SECONDS = 30.0
 
 
+class _TestStartAuthorizer:
+    def authorize(self, *, startup_dependencies_satisfied: bool) -> tuple[bool, str]:
+        return startup_dependencies_satisfied, "lower-phase control test authorization"
+
+
 def _free_tcp_endpoint() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
         candidate.bind(("127.0.0.1", 0))
@@ -67,6 +72,7 @@ def _run_router(client_endpoint: str, module_endpoint: str, heartbeat_expiry_sec
         module_endpoint,
         device_id="rov_pi5",
         allowed_module_ids={"gate_detection"},
+        start_authorizer=_TestStartAuthorizer(),
         heartbeat_expiry_seconds=heartbeat_expiry_seconds,
         ready_signal=ready,
         install_signals=True,

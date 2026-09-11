@@ -19,7 +19,7 @@ real-process startup/shutdown harness. See [Phase 9 preflight](docs/phase9-prefl
 
 Reference platforms:
 
-- Raspberry Pi 5: ARM64, Ubuntu Server 24.04 LTS, Python 3.12.x, systemd, tethered Ethernet, GStreamer >= 1.22, active cooling.
+- Raspberry Pi 5: ARM64, Ubuntu Server 24.04 LTS, Python 3.12.x, systemd, tethered Ethernet, GStreamer >= 1.22.
 - Surface computer: x86-64, Ubuntu 24.04 LTS, Python 3.12.x, GStreamer >= 1.22.
 
 ## Bootstrap
@@ -110,6 +110,8 @@ Before a mission, run the Pi preflight with the deployed camera paths, for examp
 rov-cv config validate config/mission.yaml --probe-hardware
 ```
 
-The platform preflight exits non-zero for unsafe thermal, memory, storage, camera,
-or tether conditions. The platform-specific checks are intentionally separate from
-the laptop test suite.
+The platform preflight exits non-zero for hard memory, storage, camera, tether,
+clock, configuration, artifact, or required-component failures. Temperature and
+thermal-throttling remain visible diagnostic signals but are not independent
+mission-start or mission-disable gates. See [Phase 11 deployment](docs/phase11-deployment.md)
+and [operations](docs/operations.md).

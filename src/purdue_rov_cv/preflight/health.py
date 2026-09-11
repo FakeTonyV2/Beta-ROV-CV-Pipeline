@@ -211,6 +211,17 @@ class MissionEnableGate:
                 else:
                     self._reason = "one or more required components became missing or stale"
 
+    def disable(self, reason: str, *, invalidate_accepted_run: bool = True) -> None:
+        """Fail closed and optionally retire the preflight run that enabled the gate."""
+
+        with self._lock:
+            if invalidate_accepted_run and self._accepted_preflight_run_id is not None:
+                self._invalidated_preflight_run_ids.add(self._accepted_preflight_run_id)
+            self._accepted_preflight_run_id = None
+            self._enabled = False
+            self._state = MissionState.DISABLED
+            self._reason = reason
+
 
 __all__ = [
     "ComponentHealth",

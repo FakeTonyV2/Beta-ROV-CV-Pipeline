@@ -85,6 +85,7 @@ def _preflight_command(args: argparse.Namespace) -> int:
             report = make_report(
                 report.checks,
                 execution_error=f"could not write JSON report: {error}",
+                configuration_sha256=report.configuration_sha256,
             )
     print(report.human_summary())
     if args.print_json:

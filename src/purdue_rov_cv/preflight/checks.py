@@ -28,6 +28,7 @@ class PreflightExitCode(IntEnum):
 
 class CheckStatus(StrEnum):
     PASS = "PASS"
+    WARNING = "WARNING"
     FAIL = "FAIL"
     UNAVAILABLE = "UNAVAILABLE"
 
@@ -143,31 +144,33 @@ CHECK_SPECS = (
     ),
     CheckSpec(
         "PFL-015",
-        "Average Pi CPU remains below 85%",
+        "Platform memory and CPU are within limits",
         "resource sampler",
-        "samples during camera soak",
-        "arithmetic mean CPU percentage < 85",
+        "memory and CPU samples during camera soak",
+        "available memory >= 512 MiB AND arithmetic mean CPU percentage < 85",
     ),
     CheckSpec(
         "PFL-016",
         "Pi temperature remains below 80 C",
         "thermal probe",
         "maximum measured temperature",
-        "maximum CPU temperature < 80 C",
+        "report maximum CPU temperature and warn at the historical 80 C guideline",
+        fatal=False,
     ),
     CheckSpec(
         "PFL-017",
         "No thermal throttling",
         "throttling probe",
         "platform throttle flags",
-        "all thermal throttle flags are clear",
+        "report throttle flags as diagnostic evidence",
+        fatal=False,
     ),
     CheckSpec(
         "PFL-018",
-        "Recording space is at least 10 GiB",
+        "Root and recording filesystems have required free space",
         "DiskSpaceGuard",
-        "recording.directory filesystem",
-        f"free bytes >= {10 * GIB}",
+        "root and recording.directory filesystems",
+        f"root free >= {2 * GIB} AND recording free >= {10 * GIB}",
     ),
     CheckSpec(
         "PFL-019",
@@ -227,6 +230,8 @@ class ProbeSnapshot:
     observed_monotonic: float | None = None
     unavailable_checks: dict[str, str] = field(default_factory=dict)
     evidence_by_check: dict[str, EvidenceKind] = field(default_factory=dict)
+    available_memory_bytes: int | None = None
+    root_free_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +269,7 @@ class PreflightReport:
     checks: tuple[CheckResult, ...]
     mission_enable_decision: bool
     execution_error: str = ""
+    configuration_sha256: str | None = None
 
     @property
     def mission_enable(self) -> bool:
@@ -284,6 +290,7 @@ class PreflightReport:
             "checks": [check.as_dict() for check in self.checks],
             "mission_enable_decision": self.mission_enable_decision,
             "execution_error": self.execution_error,
+            "configuration_sha256": self.configuration_sha256,
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -318,6 +325,8 @@ class PreflightReport:
             f"Phase 9 preflight: {self.overall_result}",
             f"Timestamp: {self.timestamp}",
         ]
+        if self.configuration_sha256 is not None:
+            lines.append(f"Configuration SHA-256: {self.configuration_sha256}")
         for check in self.checks:
             line = f"[{check.status.value}] {check.check_id} {check.name} ({check.evidence.value})"
             if check.failure_reason:
@@ -359,6 +368,7 @@ def _result(
     thresholds: dict[str, Any],
     *,
     evidence: EvidenceKind = EvidenceKind.OBSERVED,
+    warning: bool = False,
 ) -> CheckResult:
     return CheckResult(
         spec.check_id,
@@ -366,7 +376,7 @@ def _result(
         spec.probe,
         spec.inputs,
         spec.calculation,
-        CheckStatus.PASS if passed else CheckStatus.FAIL,
+        CheckStatus.PASS if passed else CheckStatus.WARNING if warning else CheckStatus.FAIL,
         spec.fatal,
         "" if passed else reason,
         measured,
@@ -552,10 +562,18 @@ def evaluate_checks(config: AppConfig, snapshot: ProbeSnapshot) -> tuple[CheckRe
     results.append(
         _result(
             specs["PFL-015"],
-            snapshot.average_cpu_percent < 85.0,
-            f"average CPU {snapshot.average_cpu_percent:.3f}% is not below 85%",
-            {"average_cpu_percent": snapshot.average_cpu_percent},
-            {"exclusive_maximum_percent": 85.0},
+            snapshot.average_cpu_percent < 85.0
+            and snapshot.available_memory_bytes is not None
+            and snapshot.available_memory_bytes >= 512 * 1024**2,
+            (
+                f"average CPU={snapshot.average_cpu_percent:.3f}% or available memory="
+                f"{snapshot.available_memory_bytes!r} bytes violates the platform resource gate"
+            ),
+            {
+                "average_cpu_percent": snapshot.average_cpu_percent,
+                "available_memory_bytes": snapshot.available_memory_bytes,
+            },
+            {"exclusive_maximum_cpu_percent": 85.0, "minimum_available_memory_bytes_inclusive": 512 * 1024**2},
         )
     )
     results.append(
@@ -564,7 +582,8 @@ def evaluate_checks(config: AppConfig, snapshot: ProbeSnapshot) -> tuple[CheckRe
             snapshot.maximum_temperature_c < 80.0,
             f"temperature {snapshot.maximum_temperature_c:.3f} C is not below 80 C",
             {"maximum_temperature_c": snapshot.maximum_temperature_c},
-            {"exclusive_maximum_c": 80.0},
+            {"historical_guideline_c": 80.0, "mission_gate": False},
+            warning=True,
         )
     )
     results.append(
@@ -573,16 +592,28 @@ def evaluate_checks(config: AppConfig, snapshot: ProbeSnapshot) -> tuple[CheckRe
             not snapshot.thermally_throttled,
             "thermal throttling flag is set",
             {"thermally_throttled": snapshot.thermally_throttled},
-            {"thermally_throttled": False},
+            {"historical_preference": False, "mission_gate": False},
+            warning=True,
         )
     )
     results.append(
         _result(
             specs["PFL-018"],
-            snapshot.recording_free_bytes >= 10 * GIB,
-            f"recording filesystem has {snapshot.recording_free_bytes} bytes free; requires {10 * GIB}",
-            {"free_bytes": snapshot.recording_free_bytes},
-            {"minimum_bytes_inclusive": 10 * GIB},
+            snapshot.root_free_bytes is not None
+            and snapshot.root_free_bytes >= 2 * GIB
+            and snapshot.recording_free_bytes >= 10 * GIB,
+            (
+                f"root has {snapshot.root_free_bytes!r} bytes free (requires {2 * GIB}); "
+                f"recording filesystem has {snapshot.recording_free_bytes} bytes free (requires {10 * GIB})"
+            ),
+            {
+                "root_free_bytes": snapshot.root_free_bytes,
+                "recording_free_bytes": snapshot.recording_free_bytes,
+            },
+            {
+                "minimum_root_free_bytes_inclusive": 2 * GIB,
+                "minimum_recording_free_bytes_inclusive": 10 * GIB,
+            },
         )
     )
     insufficient_frames = {
@@ -636,6 +667,7 @@ def make_report(
     *,
     now: datetime | None = None,
     execution_error: str = "",
+    configuration_sha256: str | None = None,
 ) -> PreflightReport:
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if execution_error or any(check.status is CheckStatus.UNAVAILABLE and check.fatal for check in checks):
@@ -654,6 +686,7 @@ def make_report(
             "exit_code": int(code),
             "checks": [check.as_dict() for check in checks],
             "execution_error": execution_error,
+            "configuration_sha256": configuration_sha256,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -668,6 +701,7 @@ def make_report(
         checks,
         code is PreflightExitCode.PASS,
         execution_error,
+        configuration_sha256,
     )
 
 

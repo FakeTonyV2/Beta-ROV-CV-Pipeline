@@ -1,14 +1,28 @@
 [Unit]
 Description=Purdue ROV CV camera service (%i)
-After=network.target purdue-cv-broker.service
+Wants=network-online.target
+After=network-online.target purdue-cv-broker.service purdue-cv-control-router.service
+Requires=purdue-cv-broker.service purdue-cv-control-router.service
+Before=purdue-cv-system-health.service
+PartOf=purdue-cv-onboard.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
+User=purdue-cv
+Group=purdue-cv
+SupplementaryGroups=video
 ExecStart=/opt/purdue-rov-cv/.venv/bin/purdue-cv-camera --camera %i --config /etc/purdue-rov-cv/mission.yaml
 Restart=on-failure
-RestartSec=1
+RestartSec=2
 TimeoutStopSec=5
 KillSignal=SIGTERM
+RestartPreventExitStatus=78
+RuntimeDirectory=purdue-rov-cv
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=purdue-rov-cv
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=purdue-cv-onboard.target

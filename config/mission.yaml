@@ -68,7 +68,7 @@ cameras:
 
 tasks:
   gate_detection:
-    module_class: purdue_rov_cv.modules.gate.GateDetector
+    module_class: purdue_rov_cv.modules.echo.EchoModule
     enabled: true
     input_camera: front_camera
     execution_target: rov_pi5

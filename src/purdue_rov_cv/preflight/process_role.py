@@ -12,11 +12,13 @@ from purdue_rov.cv.v1 import bounding_box_pb2
 
 from purdue_rov_cv.camera.entrypoints import camera_entrypoint
 from purdue_rov_cv.config.loader import load_config
-from purdue_rov_cv.messaging.entrypoints import broker_entrypoint, control_router_entrypoint
+from purdue_rov_cv.messaging.entrypoints import broker_entrypoint
+from purdue_rov_cv.messaging.router import ControlRouterService
 from purdue_rov_cv.module_runner.entrypoints import module_runner_entrypoint
 from purdue_rov_cv.recording.disk import GIB, DiskSpaceGuard
 from purdue_rov_cv.recording.service import RecorderService
 from purdue_rov_cv.runtime.envelope import ReceivedMultipartValidator
+from purdue_rov_cv.runtime.json_logging import configure_json_logger
 from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.video.entrypoints import video_receiver_entrypoint
 
@@ -80,6 +82,35 @@ def _simulated_recorder(config_path: Path, session: str) -> int:
     return 0
 
 
+class _SimulatedStartAuthorizer:
+    """Explicit authorization boundary for the Phase 9 simulation process."""
+
+    def authorize(self, *, startup_dependencies_satisfied: bool) -> tuple[bool, str]:
+        if not startup_dependencies_satisfied:
+            return False, "simulated startup dependencies are not satisfied"
+        return True, "authorized by the explicit Phase 9 simulation boundary"
+
+
+def _simulated_router(config_path: Path) -> int:
+    """Run a real router while keeping production authorization fail-closed."""
+
+    config = load_config(config_path, environ={})
+    logger = configure_json_logger(
+        device_id=config.device.device_id,
+        process_name="phase9-simulated-control-router",
+        source_id="control-router",
+        publisher_session_id=None,
+    )
+    service = ControlRouterService.from_config(
+        config,
+        logger=logger,
+        install_signals=True,
+        start_authorizer=_SimulatedStartAuthorizer(),
+    )
+    service.run()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phase9-process-role")
     commands = parser.add_subparsers(dest="role", required=True)
@@ -100,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.role == "broker":
         return broker_entrypoint(["--config", args.config])
     if args.role == "router":
-        return control_router_entrypoint(["--config", args.config])
+        return _simulated_router(Path(args.config))
     if args.role == "camera":
         camera_args = ["--config", args.config, "--camera", args.camera, "--simulate-gstreamer"]
         if args.disconnect_after_frames is not None:

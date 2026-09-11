@@ -11,7 +11,7 @@ cameras:
   front_camera: {adapter: gstreamer_v4l2, device_path: /dev/purdue-rov-cv/front_camera, device_path_kind: fallback, resolution_tier: id_path, stable_identity: "pci-0000:00:14.0-usb-0:1.2:1.0", format: h264, width: 1920, height: 1080, frame_rate: 30, stream_index: 0, stream_to_surface: true, cv_enabled: true, allow_software_encode: false, slot_capacity_bytes: 6220800}
 tasks:
   gate_detection:
-    module_class: purdue_rov_cv.modules.gate.GateDetector
+    module_class: purdue_rov_cv.modules.echo.EchoModule
     enabled: false
     input_camera: front_camera
     execution_target: rov_pi5

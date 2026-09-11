@@ -13,6 +13,7 @@ import zmq
 
 from purdue_rov_cv.config.issues import ConfigurationError
 from purdue_rov_cv.config.loader import load_config
+from purdue_rov_cv.preflight.authorization import PreflightStartAuthorizer
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.json_logging import configure_json_logger
 from purdue_rov_cv.wire.errors import ErrorCode
@@ -74,7 +75,12 @@ def control_router_main(argv: list[str] | None = None) -> ExitCode:
         source_id="control-router",
         publisher_session_id=None,
     )
-    service = ControlRouterService.from_config(config, logger=logger, install_signals=True)
+    service = ControlRouterService.from_config(
+        config,
+        logger=logger,
+        install_signals=True,
+        start_authorizer=PreflightStartAuthorizer(config),
+    )
     service.run()
     return ExitCode.CLEAN_SHUTDOWN
 

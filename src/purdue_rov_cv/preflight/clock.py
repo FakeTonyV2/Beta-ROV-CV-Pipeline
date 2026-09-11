@@ -120,14 +120,24 @@ class ClockMonitor:
         self._last_sample: ClockSample | None = None
         self._last_success: float | None = None
         self._failures = 0
+        self._recovery_successes = 0
+        self._invalidated = False
 
     def observe(self, sample: ClockSample) -> ClockStatus:
         self._last_sample = sample
         if sample.passes(maximum_offset_ms=self.maximum_offset_ms):
             self._last_success = sample.checked_monotonic
             self._failures = 0
+            if self._invalidated:
+                self._recovery_successes += 1
+                if self._recovery_successes >= self.invalidate_after_failures:
+                    self._invalidated = False
+                    self._recovery_successes = 0
         else:
             self._failures += 1
+            self._recovery_successes = 0
+            if self._failures >= self.invalidate_after_failures:
+                self._invalidated = True
         return self.status()
 
     def poll(self, probe: ClockProbe) -> ClockStatus:
@@ -139,8 +149,8 @@ class ClockMonitor:
         sample_valid = bool(sample and sample.passes(maximum_offset_ms=self.maximum_offset_ms))
         success_age = None if self._last_success is None else current - self._last_success
         fresh = success_age is not None and 0.0 <= success_age <= self.freshness_seconds
-        synchronized = sample_valid and fresh
-        latency_valid = fresh and self._failures < self.invalidate_after_failures
+        synchronized = sample_valid and fresh and not self._invalidated
+        latency_valid = fresh and self._failures < self.invalidate_after_failures and not self._invalidated
         if sample is None:
             reason = "clock has not been checked"
         elif not sample.source_reachable:
@@ -154,6 +164,11 @@ class ClockMonitor:
             )
         elif not fresh:
             reason = f"last successful clock check is older than {self.freshness_seconds:.0f} seconds"
+        elif self._invalidated:
+            reason = (
+                "clock recovery requires three consecutive valid checks "
+                f"({self._recovery_successes}/{self.invalidate_after_failures})"
+            )
         else:
             reason = ""
         return ClockStatus(synchronized, latency_valid, self._failures, self._last_success, sample, reason)

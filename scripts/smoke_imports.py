@@ -19,6 +19,7 @@ MODULES = (
     "yaml",
     "purdue_rov.cv.v1.envelope_pb2",
     "purdue_rov_cv.config",
+    "purdue_rov_cv.deployment",
     "purdue_rov_cv.camera",
     "purdue_rov_cv.frame_buffer",
     "purdue_rov_cv.messaging",

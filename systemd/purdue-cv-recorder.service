@@ -1,0 +1,26 @@
+[Unit]
+Description=Purdue ROV CV production recorder
+Wants=network-online.target chrony.service
+After=network-online.target chrony.service
+PartOf=purdue-cv-surface.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=purdue-cv
+Group=purdue-cv
+SupplementaryGroups=video
+ExecStart=/opt/purdue-rov-cv/.venv/bin/purdue-cv-recorder --config /etc/purdue-rov-cv/mission.yaml --session auto --session-file /run/purdue-rov-cv/recording-session
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+KillSignal=SIGTERM
+RestartPreventExitStatus=78
+RuntimeDirectory=purdue-rov-cv
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=purdue-rov-cv
+
+[Install]
+WantedBy=purdue-cv-surface.target

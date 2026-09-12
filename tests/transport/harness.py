@@ -20,6 +20,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import cache
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -297,6 +298,9 @@ class MemoryDecision:
     final_rss_bytes: int
     late_slope_bytes_per_second: float
     late_span_bytes: int
+    late_growth_step_count: int
+    late_transition_count: int
+    late_growth_step_threshold_bytes: int
     allowed_growth_bytes: int
     plateau_tolerance_bytes: int
     reason: str
@@ -321,12 +325,19 @@ def evaluate_memory_boundedness(samples: list[MemorySample]) -> MemoryDecision:
     ]
     slope = statistics.median(pairwise_slopes) if pairwise_slopes else 0.0
     late_span = max(sample.rss_bytes for sample in late) - min(sample.rss_bytes for sample in late)
+    growth_step_threshold = 16 * 1024
+    growth_steps = sum(right.rss_bytes - left.rss_bytes >= growth_step_threshold for left, right in pairwise(late))
+    transition_count = len(late) - 1
     allowed_growth = max(8 * 1024 * 1024, baseline // 4)
     plateau_tolerance = max(2 * 1024 * 1024, baseline // 20)
     # A temporary transport buffer peak is not a leak when it is released.
-    # Bound retained growth and the late trend; retain the peak as evidence.
+    # Likewise, one allocator step plus page-scale RSS jitter is not a
+    # continuous trend. Require meaningful growth in at least half of the
+    # adjacent late-window transitions before treating a robust slope as
+    # sustained.
     growth_ok = samples[-1].rss_bytes - baseline <= allowed_growth
-    trend_ok = slope <= 64 * 1024 and late_span <= plateau_tolerance
+    sustained_growth_steps = growth_steps >= max(2, math.ceil(transition_count / 2))
+    trend_ok = late_span <= plateau_tolerance and not (slope > 64 * 1024 and sustained_growth_steps)
     bounded = growth_ok and trend_ok
     reason = (
         "growth stayed within the warm-up allowance and the late window plateaued"
@@ -340,6 +351,9 @@ def evaluate_memory_boundedness(samples: list[MemorySample]) -> MemoryDecision:
         samples[-1].rss_bytes,
         slope,
         late_span,
+        growth_steps,
+        transition_count,
+        growth_step_threshold,
         allowed_growth,
         plateau_tolerance,
         reason,

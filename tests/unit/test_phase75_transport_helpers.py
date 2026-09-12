@@ -100,6 +100,18 @@ def test_memory_evaluator_accepts_plateau_and_rejects_continuous_growth() -> Non
     assert not modest_leak.bounded
     assert modest_leak.final_rss_bytes - modest_leak.baseline_rss_bytes < modest_leak.allowed_growth_bytes
 
+    isolated_late_rss = [40 * mib] * 7 + [40 * mib + 4 * 1024, 40 * mib + 512 * 1024, 40 * mib + 512 * 1024]
+    isolated_late_step = [MemorySample(float(i), rss, 1.0) for i, rss in enumerate(isolated_late_rss)]
+    allocator_plateau = evaluate_memory_boundedness(isolated_late_step)
+    assert allocator_plateau.bounded
+    assert allocator_plateau.late_slope_bytes_per_second > 64 * 1024
+    assert allocator_plateau.late_growth_step_count == 1
+
+    stair_step_growth = [MemorySample(float(i), 40 * mib + (i // 2) * 256 * 1024, 1.0) for i in range(20)]
+    stair_step_leak = evaluate_memory_boundedness(stair_step_growth)
+    assert not stair_step_leak.bounded
+    assert stair_step_leak.late_growth_step_count >= 2
+
     released_peak = [
         MemorySample(float(i), 40 * mib + (12 * mib if 4 <= i <= 6 else 1 * mib if i >= 7 else 0), 1.0)
         for i in range(12)

@@ -104,24 +104,24 @@ def test_hardware_probe_hashes_enabled_artifacts_and_skips_disabled_tasks(tmp_pa
     artifact.write_bytes(b"approved model bytes")
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     config = _config()
-    task = config.tasks["gate_detection"]
+    task = config.tasks["crab_detection"]
     checked_task = task.model_copy(
         update={"artifact": task.artifact.model_copy(update={"path": artifact, "sha256": digest})}
     )
-    checked_config = config.model_copy(update={"tasks": {"gate_detection": checked_task}})
+    checked_config = config.model_copy(update={"tasks": {"crab_detection": checked_task}})
 
     assert _probe().validate_runtime_and_artifact(checked_config) == ()
 
     mismatched_task = checked_task.model_copy(
         update={"artifact": checked_task.artifact.model_copy(update={"sha256": "0" * 64})}
     )
-    mismatched_config = config.model_copy(update={"tasks": {"gate_detection": mismatched_task}})
+    mismatched_config = config.model_copy(update={"tasks": {"crab_detection": mismatched_task}})
     assert [issue.code for issue in _probe().validate_runtime_and_artifact(mismatched_config)] == [
         "MODEL_HASH_MISMATCH"
     ]
 
     disabled_task = checked_task.model_copy(update={"enabled": False})
-    disabled_config = config.model_copy(update={"tasks": {"gate_detection": disabled_task}})
+    disabled_config = config.model_copy(update={"tasks": {"crab_detection": disabled_task}})
     assert _probe(runtime_available=lambda module_name: False).validate_runtime_and_artifact(disabled_config) == ()
 
 

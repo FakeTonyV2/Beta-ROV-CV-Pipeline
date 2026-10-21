@@ -42,7 +42,9 @@ from purdue_rov_cv.preflight import (
     read_preflight_observation,
     run_preflight,
 )
+from purdue_rov_cv.preflight.clock import ChronyClockProbe
 from purdue_rov_cv.preflight.harness import ManagedProcess, Phase9ProcessHarness, _active_interface
+from purdue_rov_cv.preflight.probes import _required_component_states
 from purdue_rov_cv.recording.disk import GIB, DiskSpaceGuard
 from purdue_rov_cv.runtime.exit_codes import ExitCode
 from purdue_rov_cv.runtime.state import ComponentState
@@ -132,6 +134,42 @@ def test_memory_and_root_disk_are_hard_gates() -> None:
     assert not _by_id(low_disk.checks)["PFL-018"].passed
     assert _by_id(exact.checks)["PFL-015"].passed
     assert _by_id(exact.checks)["PFL-018"].passed
+
+
+def test_recording_disabled_removes_recorder_and_recording_disk_gate() -> None:
+    config, snapshot = _evaluated()
+    disabled = config.model_copy(update={"recording": config.recording.model_copy(update={"enabled": False})})
+    snapshot = replace(
+        snapshot,
+        root_free_bytes=2 * GIB,
+        recording_free_bytes=0,
+        missing_required_components=tuple(x for x in snapshot.missing_required_components if x != "recorder"),
+        component_states={k: v for k, v in snapshot.component_states.items() if k != "recorder"},
+    )
+    assert "recorder" not in _required_component_states(disabled)
+    check = _by_id(evaluate_checks(disabled, snapshot))["PFL-018"]
+    assert check.passed
+    assert check.thresholds["minimum_recording_free_bytes_inclusive"] is None
+
+
+def test_chrony_probe_requires_the_configured_selected_source() -> None:
+    import subprocess
+
+    outputs = iter(
+        [
+            subprocess.CompletedProcess([], 0, "Last offset : 0.001 seconds\nLeap status : Normal\n", ""),
+            subprocess.CompletedProcess([], 0, "^+ 10.4.8.3 2 6 10 -0.001 +0.003\n", ""),
+            subprocess.CompletedProcess([], 0, "Last offset : 0.001 seconds\nLeap status : Normal\n", ""),
+            subprocess.CompletedProcess([], 0, "^* 10.4.8.1 2 6 10 -0.001 +0.003\n", ""),
+        ]
+    )
+    probe = ChronyClockProbe(run=lambda *_args, **_kwargs: next(outputs), monotonic=lambda: 10.0)
+
+    wrong = probe.check(expected_server_ip="10.4.8.1")
+    right = probe.check(expected_server_ip="10.4.8.1")
+
+    assert not wrong.source_reachable
+    assert right.source_reachable
 
 
 def test_nominal_check_results_and_report_representations_are_deterministic() -> None:
@@ -286,7 +324,7 @@ def test_numeric_thresholds_are_exact() -> None:
         average_cpu_percent=84.999,
         maximum_temperature_c=79.999,
         recording_free_bytes=10 * GIB,
-        module_processed_frames={"gate_detection": 10},
+        module_processed_frames={"crab_detection": 10},
     )
     checks = _by_id(evaluate_checks(config, snapshot))
     for check_id in ("PFL-011", "PFL-012", "PFL-014", "PFL-015", "PFL-016", "PFL-018", "PFL-019"):
@@ -298,7 +336,7 @@ def test_numeric_thresholds_are_exact() -> None:
         average_cpu_percent=85.0,
         maximum_temperature_c=80.0,
         recording_free_bytes=10 * GIB - 1,
-        module_processed_frames={"gate_detection": 9},
+        module_processed_frames={"crab_detection": 9},
     )
     checks = _by_id(evaluate_checks(config, failed))
     for check_id in ("PFL-011", "PFL-012", "PFL-014", "PFL-015", "PFL-016", "PFL-018", "PFL-019"):

@@ -18,7 +18,6 @@ from pydantic import ValidationError
 
 from purdue_rov_cv.config.models import (
     AppConfig,
-    DebugSnapshotsConfig,
     DiagnosticsConfig,
     DynamicTaskConfig,
     TaskConfig,
@@ -106,7 +105,6 @@ class ModuleInitializationError(RuntimeError):
 class _DynamicUpdate:
     task: TaskConfig
     diagnostics: DiagnosticsConfig
-    debug_snapshots: DebugSnapshotsConfig
     module_values: DynamicConfig | None
     rollback_values: DynamicConfig | None
 
@@ -208,7 +206,6 @@ class ModuleRunnerService:
         self._escalation_lock = Lock()
         self._settings_lock = Lock()
         self._active_diagnostics = config.diagnostics
-        self._active_debug_snapshots = config.debug_snapshots
         self._threads: list[Thread] = []
         self._install_signals = install_signals
         self.execution_counts: dict[str, int] = {}
@@ -368,7 +365,7 @@ class ModuleRunnerService:
         plain = cast(dict[str, NativeValue], converted)
         flattened: dict[str, NativeValue] = {}
         for path, value in plain.items():
-            if path in {"dynamic", "diagnostics", "debug_snapshots"} and isinstance(value, dict):
+            if path in {"dynamic", "diagnostics"} and isinstance(value, dict):
                 for child, child_value in value.items():
                     flattened[f"{path}.{child}"] = child_value
             else:
@@ -377,12 +374,9 @@ class ModuleRunnerService:
         with self._settings_lock:
             current_task = self.task
             current_diagnostics = self._active_diagnostics
-            current_debug = self._active_debug_snapshots
         task_values = current_task.model_dump(mode="python")
         diagnostics_values = current_diagnostics.model_dump(mode="python")
-        debug_values = current_debug.model_dump(mode="python")
         task_dynamic_changed = False
-        debug_changed = False
 
         for received_path, received_value in flattened.items():
             path = received_path
@@ -396,7 +390,7 @@ class ModuleRunnerService:
 
             if path == "max_input_fps" or path.startswith("dynamic."):
                 canonical_path = f"tasks.{self.task_id}.{path}"
-            elif path.startswith("diagnostics.") or path.startswith("debug_snapshots."):
+            elif path.startswith("diagnostics."):
                 canonical_path = path
             else:
                 canonical_path = f"tasks.{self.task_id}.{path}"
@@ -414,33 +408,19 @@ class ModuleRunnerService:
                 task_dynamic_changed = True
             elif path == "diagnostics.publish_interval_ms":
                 diagnostics_values["publish_interval_ms"] = self._integral_struct_number(received_value, path)
-            elif path.startswith("debug_snapshots."):
-                field = path.removeprefix("debug_snapshots.")
-                if field == "jpeg_quality":
-                    received_value = self._integral_struct_number(received_value, path)
-                debug_values[field] = received_value
-                debug_changed = True
             else:  # guarded by the canonical policy above
                 raise ValueError(f"runtime update has no Phase 5 owner: {received_path}")
 
         proposed_task = TaskConfig.model_validate(task_values)
         proposed_diagnostics = DiagnosticsConfig.model_validate(diagnostics_values)
-        proposed_debug = DebugSnapshotsConfig.model_validate(debug_values)
         module_values: dict[str, NativeValue] = {}
         rollback_values: dict[str, NativeValue] = {}
         if task_dynamic_changed:
             module_values.update(cast(DynamicConfig, proposed_task.dynamic.model_dump(mode="python")))
             rollback_values.update(cast(DynamicConfig, current_task.dynamic.model_dump(mode="python")))
-        if debug_changed:
-            dynamic_debug_fields = ("enabled", "maximum_rate_hz", "jpeg_quality")
-            module_values["debug_snapshots"] = {field: getattr(proposed_debug, field) for field in dynamic_debug_fields}
-            rollback_values["debug_snapshots"] = {
-                field: getattr(current_debug, field) for field in dynamic_debug_fields
-            }
         return _DynamicUpdate(
             proposed_task,
             proposed_diagnostics,
-            proposed_debug,
             module_values if module_values else None,
             rollback_values if rollback_values else None,
         )
@@ -462,7 +442,6 @@ class ModuleRunnerService:
         with self._settings_lock:
             self.task = update.task
             self._active_diagnostics = update.diagnostics
-            self._active_debug_snapshots = update.debug_snapshots
 
     def _execute_command(self, request: control_pb2.CommandRequest) -> control_pb2.CommandResponse:
         command_type = request.WhichOneof("command")

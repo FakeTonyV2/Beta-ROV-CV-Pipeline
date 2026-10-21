@@ -155,9 +155,9 @@ Key rules:
 - V4L2 uses stable `/dev/v4l/by-id/...` or `/dev/purdue-rov-cv/...`, never `/dev/videoN`.
 - Artifact SHA-256 is exactly 64 lowercase hexadecimal characters and paths are absolute Linux paths.
 - Recording values are fixed at 300-second video segments, 10 GiB start threshold, 1 MiB MCAP chunks, and zstd.
-- Only task FPS/threshold, diagnostic interval, and a subset of debug-snapshot fields can be updated inside a running module. YAML reload and cross-process atomic application are not implemented.
+- Only task FPS/threshold and diagnostic interval can be updated inside a running module. Debug snapshots are reserved and cannot be enabled or changed at runtime. YAML reload and cross-process atomic application are not implemented.
 
-The sample `gate_detection` task runs `EchoModule`, not a detector. Its model path/hash are placeholders until replaced with a trusted artifact and real module.
+`config/development.yaml` keeps `gate_detection` pointed at `EchoModule` as a runner example. The production `config/mission.yaml` runs `crab_detection` through `CrabDetectionModule`. See [crab detector development and deployment](crab-detection.md) for ONNX export, image predictions, artifact SHA-256, and deployment provisioning.
 
 | Section | What it controls |
 | --- | --- |
@@ -169,7 +169,7 @@ The sample `gate_detection` task runs `EchoModule`, not a detector. Its model pa
 | `messaging.control` | surface-client and module DEALER/ROUTER endpoints |
 | `messaging` limits | 4 MiB maximum and result send/receive HWMs |
 | `diagnostics` | health publication interval and JSON log level |
-| `debug_snapshots` | bounded snapshot policy; publication/request path is incomplete in production |
+| `debug_snapshots` | schema reserved for a future request/publication path; `enabled: true` is rejected in V1 |
 | `recording` | enable flag, absolute root, fixed segmentation/disk/chunk/compression values |
 | `camera_limits` | configured/active camera ceilings |
 | `cameras.<id>` | backend identity, exact mode, stream index, surface/CV branches, SHM slot capacity |
@@ -417,9 +417,9 @@ For all task results, subscribe with `socket.setsockopt(zmq.SUBSCRIBE, b"cv.resu
 The supported operator path is:
 
 ```bash
-rov-cv operator get_status gate_detection --config /etc/purdue-rov-cv/mission.yaml
-rov-cv operator start gate_detection --config /etc/purdue-rov-cv/mission.yaml
-rov-cv operator stop gate_detection --config /etc/purdue-rov-cv/mission.yaml
+rov-cv operator get_status crab_detection --config /etc/purdue-rov-cv/mission.yaml
+rov-cv operator start crab_detection --config /etc/purdue-rov-cv/mission.yaml
+rov-cv operator stop crab_detection --config /etc/purdue-rov-cv/mission.yaml
 ```
 
 Optional `--preflight-report /var/lib/purdue-rov-cv/preflight.json` adds an observation to operator JSON output; it does not bypass or replace the router's production START authorization.
@@ -438,7 +438,7 @@ fields = Struct()
 fields.update({"dynamic.confidence_threshold": 0.7})
 request = control_pb2.CommandRequest(
     command_id=uuid4().bytes,
-    target_id="gate_detection",
+    target_id="crab_detection",
     issued_time_unix_ns=time.time_ns(),
     requested_timeout_ms=3000,
     set_dynamic_config=control_pb2.SetDynamicConfig(fields=fields),
@@ -448,21 +448,18 @@ with ControlClient("tcp://192.168.50.2:5560") as client:
     print(response)
 ```
 
-`RESET` uses the same request shape with a fresh command UUID and `reset=control_pb2.Reset()`. `GET_COMMAND_STATUS` is normally `client.get_command_status("gate_detection", original_command_id)`. It returns the cached final/pending status under a new query UUID. The runner rejects RESET outside `ERROR` and rejects static fields in dynamic updates as `RESTART_REQUIRED`.
+`RESET` uses the same request shape with a fresh command UUID and `reset=control_pb2.Reset()`. `GET_COMMAND_STATUS` is normally `client.get_command_status("crab_detection", original_command_id)`. It returns the cached final/pending status under a new query UUID. The runner rejects RESET outside `ERROR` and rejects static fields in dynamic updates as `RESTART_REQUIRED`.
 
 After an acknowledgement timeout, the client returns `OUTCOME_UNKNOWN` and does not resend. Preserve the original UUID and use the one allowed status query. Do not blindly create a new state-changing command. `set_mode`, debug-snapshot request, and recording commands exist in protobuf but have no production target owner.
 
 ## 10. Installing the actual ROV and surface deployment
 
-Use the same reviewed mission YAML on both hosts. Place the trusted model/runtime on the Pi before installation and set its real hash:
+Use the same reviewed mission YAML on both hosts. The Pi deploys the ONNX Runtime dependency from `requirements.lock`. Keep the local artifact `models/crab_dection.onnx` available in the checkout and ensure its digest matches `tasks.crab_detection.artifact.sha256`; the installer copies only a hash-matching artifact to `/opt/purdue-rov-cv/models/`.
 
-The mission config uses surface `192.168.50.1`, Pi `192.168.50.2`, and tether interface `eth0`. Configure those addresses outside this repository, connect the dedicated tether, and verify `ip -brief link show eth0`, `ip -brief address show eth0`, and mutual reachability. `install_chrony.sh surface` installs a local stratum-8 server bound to the surface address; `install_chrony.sh pi` installs the Pi client. Confirm both with `chronyc -n tracking` and `chronyc -n sources -v`.
+The mission config uses surface `192.168.50.1`, Pi `192.168.50.2`, and tether interface `eth0`. Configure those addresses outside this repository, connect the dedicated tether, and verify `ip -brief link show eth0`, `ip -brief address show eth0`, and mutual reachability. `install_chrony.sh surface` renders a local stratum-8 server bound to the configured surface address; `install_chrony.sh pi` renders the Pi client for configured `clock.server_ip`. Confirm both with `chronyc -n tracking` and `chronyc -n sources -v`.
 
 ```bash
-sudo install -d -m 0755 /opt/purdue-rov-cv/models
-TRUSTED_MODEL=/path/to/trusted-model.onnx
-sudo install -m 0644 "$TRUSTED_MODEL" /opt/purdue-rov-cv/models/gate_detector.onnx
-sha256sum /opt/purdue-rov-cv/models/gate_detector.onnx
+sha256sum models/crab_dection.onnx
 ```
 
 On the Pi:
@@ -479,9 +476,9 @@ sudo env ALLOW_NON_REFERENCE_PLATFORM=1 ./scripts/setup_system_deps.sh
 sudo ./scripts/install_deployment.sh surface config/mission.yaml
 ```
 
-The installer records revision/worktree state, backs up a changed prior config as `mission.yaml.previous`, installs non-editably, reconciles instances, installs chrony configuration, enables one role target, and runs environment validation. It does not start the target.
+The installer records revision/worktree state, validates the candidate mission and Pi model before applying deployment changes, installs non-editably, reconciles instances, and renders chrony from the candidate. It snapshots the current mission, model directory, chrony drop-in, and project-owned systemd files/links; a later failure restores that state. Environment validation must pass before one role target is enabled. The installer does not start the target.
 
-> **Implementation note:** The configuration describes `recording.enabled: false`, while `systemd/purdue-cv-surface.target` statically wants the recorder and its entrypoint does not reject disabled recording. The current runtime behavior is that the target starts the recorder; do not rely on disabled recording until this discrepancy is fixed.
+With `recording.enabled: false`, generated surface topology omits the recorder, direct recorder startup refuses before creating a session, and preflight skips the recording-filesystem reserve while retaining its root-space check.
 
 ## 11. Operating the Pi and surface
 
@@ -596,7 +593,7 @@ Exit 0 means all required checks passed, 1 means a required check failed, and 2 
 
 The report covers strict config and hashes; tether/ping; broker round-trip and control status; chrony; stable camera identity and exact mode; simultaneous run duration, FPS, and maximum gap; RTP and exact FrameIndex correlation; CPU/memory/root/recording disk; temperature/throttling observations; task frame processing; and required component states. Human output names each PFL check; JSON includes version, run identity, evidence kind, measurements, fatality, and result for automation. Correct the specific failing subsystem—do not edit the report or bypass router authorization.
 
-> **Implementation note:** The intended component inventory makes recorder conditional, while `src/purdue_rov_cv/preflight/probes.py::_required_component_states()` always includes `recorder`. The current production behavior is that PFL-020 requires it even when recording is disabled. A simulated pass does not prove physical UVC, RTP, clock, model, or deployed component behavior.
+The required component inventory includes the recorder only when recording is enabled. A simulated pass does not prove physical UVC, RTP, clock, model, or deployed component behavior.
 
 ## 15. Monitoring and diagnostics
 
@@ -604,7 +601,7 @@ Useful commands:
 
 ```bash
 journalctl -fu purdue-cv-camera@front_camera
-journalctl -fu purdue-cv-module@gate_detection
+journalctl -fu purdue-cv-module@crab_detection
 journalctl -fu purdue-cv-control-router
 journalctl --since '-5 minutes' -u 'purdue-cv-*' --no-pager
 cat /run/purdue-rov-cv/system-health.json

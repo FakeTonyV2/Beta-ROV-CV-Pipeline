@@ -8,6 +8,8 @@ annotated-types==0.7.0
     # via pydantic
 coverage[toml]==7.15.4
     # via pytest-cov
+flatbuffers==25.12.19
+    # via onnxruntime
 iniconfig==2.3.0
     # via pytest
 librt==0.15.0
@@ -26,8 +28,12 @@ mypy-extensions==1.1.0
     # via mypy
 numpy==2.5.1
     # via -r requirements.in
+onnxruntime==1.30.0
+    # via -r requirements.in
 packaging==26.2
-    # via pytest
+    # via
+    #   onnxruntime
+    #   pytest
 pathspec==1.1.1
     # via mypy
 pluggy==1.6.0
@@ -73,3 +79,8 @@ typing-inspection==0.4.2
     # via pydantic
 zstandard==0.25.0
     # via mcap
+# Runtime dependency used by configured ONNX task modules. This lock entry is
+# kept in sync with requirements.in; pip-tools in the repository venv is
+# currently incompatible with its installed pip version.
+flatbuffers==25.12.19
+    # via onnxruntime

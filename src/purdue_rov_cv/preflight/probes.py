@@ -48,9 +48,10 @@ def _required_component_states(config: AppConfig) -> dict[str, ComponentState]:
         "chronyd": ComponentState.RUNNING,
         "broker": ComponentState.RUNNING,
         "control_router": ComponentState.RUNNING,
-        "recorder": ComponentState.RUNNING,
         "operator": ComponentState.RUNNING,
     }
+    if config.recording.enabled:
+        states["recorder"] = ComponentState.RUNNING
     states.update({f"camera:{key}": ComponentState.RUNNING for key in config.cameras})
     states.update({f"module:{key}": ComponentState.RUNNING for key, task in config.tasks.items() if task.enabled})
     states.update(
@@ -675,12 +676,17 @@ class LocalSystemPreflightProbe:
                     0.0,
                 )
         try:
-            free = self.disk_guard.inspect(config.recording.directory).free_bytes
+            free = self.disk_guard.inspect(config.recording.directory).free_bytes if config.recording.enabled else 0
         except (OSError, ValueError) as error:
             free = 0
-            unavailable["PFL-018"] = f"disk probe could not execute: {type(error).__name__}: {error}"
+            if config.recording.enabled:
+                unavailable["PFL-018"] = f"disk probe could not execute: {type(error).__name__}: {error}"
         try:
-            clock = self.clock_probe.check()
+            clock = (
+                self.clock_probe.check(expected_server_ip=str(config.clock.server_ip))
+                if isinstance(self.clock_probe, ChronyClockProbe)
+                else self.clock_probe.check()
+            )
         except Exception as error:
             clock = ClockSample(False, False, float("inf"), now, "clock probe unavailable")
             unavailable["PFL-007"] = f"clock probe could not execute: {type(error).__name__}: {error}"

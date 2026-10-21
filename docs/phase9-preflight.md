@@ -1,4 +1,4 @@
-# Phase 9 simulated full-system preflight
+# Production preflight, authorization, and simulation
 
 Phase 9 composes the existing strict configuration loader, broker, control
 router and client, camera service, module runner, bounded queues, recorder,
@@ -36,27 +36,30 @@ through its production broker/shared-memory evidence provider. A probe that ran
 and observed an unsafe value is `FAIL` (exit `1`); telemetry that could not be
 collected is `UNAVAILABLE` (exit `2`). Neither is treated as success.
 
-## Surface operator
+## Operator commands
 
 The operator uses the existing ROUTER/DEALER control protocol and canonical
 Protobuf messages:
 
 ```bash
-rov-cv operator get_status echo --config /path/to/mission.yaml
-rov-cv operator start echo --config /path/to/mission.yaml --preflight-report /tmp/preflight.json
-rov-cv operator stop echo --config /path/to/mission.yaml --preflight-report /tmp/preflight.json
+rov-cv operator get_status crab_detection --config /etc/purdue-rov-cv/mission.yaml
+rov-cv operator start crab_detection --config /etc/purdue-rov-cv/mission.yaml --preflight-report /var/lib/purdue-rov-cv/preflight.json
+rov-cv operator stop crab_detection --config /etc/purdue-rov-cv/mission.yaml
 ```
 
 It reports command state and error information through the canonical control
-path. A supplied preflight report is validated and shown as eligibility
-evidence, not as authoritative mission state. Because this repository has no
-long-lived deployment orchestrator, the standalone CLI reports mission state as
-`UNOBSERVED`; the in-process `MissionEnableGate` remains the single authority in
-the Phase 9 harness.
+path. In production, each `START` is authorized against a recent canonical
+preflight report, current health/camera/artifact/module checks, and the
+configured mission. `/run/purdue-rov-cv/mission-state.json` records the outcome
+and time of that authorization. It is point-in-time evidence, not continuous
+health aggregation or an always-on safety interlock. Check fresh health and
+preflight evidence for current readiness. The in-process `MissionEnableGate`
+is a deterministic simulation/test seam, not the production authority.
 
 ## Checklist contract
 
-All checks are fatal for Phase 9. The JSON report includes each probe, its
+Required checks block production `START`; thermal temperature and throttle
+observations are diagnostic and nonfatal. The JSON report includes each probe, its
 inputs, exact calculation, measurements, threshold, and actionable reason.
 
 | ID | Probe | Pass calculation |
@@ -78,7 +81,7 @@ inputs, exact calculation, measurements, threshold, and actionable reason.
 | PFL-015 | resource sampler | available memory `>= 512 MiB` and average CPU `< 85%` |
 | PFL-016 | thermal probe | diagnostic warning at historical `80 C`; non-fatal |
 | PFL-017 | throttle probe | diagnostic throttle observation; non-fatal |
-| PFL-018 | `DiskSpaceGuard` | root free `>= 2 GiB` and recording free `>= 10 GiB` |
+| PFL-018 | `DiskSpaceGuard` | root free `>= 2 GiB`; when recording is enabled, recording free `>= 10 GiB` |
 | PFL-019 | module metrics | each enabled module processes `>= 10` frames |
 | PFL-020 | health aggregator | every required component present and none `ERROR` |
 
@@ -110,4 +113,4 @@ seconds for one hour, fails if any process grows by more than 64 MiB, and writes
 `phase9-60-minute-report.json` in its pytest temporary directory. Physical USB
 identity, real camera modes, true tether RTP, Pi temperature/throttle behavior,
 and cross-device chrony quality remain hardware acceptance items. Surface and
-Pi chrony examples are in `config/chrony/`.
+Pi and surface chrony drop-ins are rendered by `scripts/configure_chrony.py` from the validated mission configuration.

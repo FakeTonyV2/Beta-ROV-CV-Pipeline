@@ -9,7 +9,7 @@ messaging:
   result_send_hwm: 5
   result_receive_hwm: 5
 diagnostics: {publish_interval_ms: 1000, log_level: INFO}
-debug_snapshots: {enabled: true, maximum_rate_hz: 1.0, maximum_width: 640, maximum_height: 360, jpeg_quality: 70}
+debug_snapshots: {enabled: false, maximum_rate_hz: 1.0, maximum_width: 640, maximum_height: 360, jpeg_quality: 70}
 recording:
   enabled: false
   directory: /var/lib/purdue-rov-cv/recordings

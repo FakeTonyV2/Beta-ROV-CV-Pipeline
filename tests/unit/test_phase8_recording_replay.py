@@ -174,6 +174,22 @@ def test_phase8_recording_configuration_is_canonical() -> None:
     assert config.recording.structured.compression == "zstd"
 
 
+def test_disabled_recorder_refuses_before_creating_session_file(tmp_path: Path) -> None:
+    import yaml
+
+    fixture = Path(__file__).parents[1] / "fixtures" / "config" / "valid" / "single_camera.yaml"
+    data = yaml.safe_load(fixture.read_text(encoding="utf-8"))
+    data["recording"]["enabled"] = False
+    config_path = tmp_path / "disabled.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    session_file = tmp_path / "session.txt"
+
+    with pytest.raises(ValueError, match="recording is disabled"):
+        recorder_main(["--config", str(config_path), "--session", "auto", "--session-file", str(session_file)])
+
+    assert not session_file.exists()
+
+
 @pytest.mark.parametrize(
     ("free", "start_allowed", "runtime_low"),
     [

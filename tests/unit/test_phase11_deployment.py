@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from purdue_rov_cv.camera.health import CameraHealthPublisher
 from purdue_rov_cv.config.loader import config_hash, load_config
@@ -30,8 +31,11 @@ from purdue_rov_cv.runtime.metrics import RuntimeMetrics
 from purdue_rov_cv.runtime.shutdown import ShutdownToken
 from purdue_rov_cv.runtime.state import ComponentState, ComponentStateMachine
 from scripts.capture_startup_trace import STAGE_NAMES, _application_ready
+from scripts.configure_chrony import render_chrony
 from scripts.configure_deployment import configure
+from scripts.deployment_state import capture, restore
 from scripts.run_phase11_hil import _camera_hub, _runtime_component_results, _stability_merge
+from scripts.validate_deployment_candidate import validate_candidate
 from scripts.validate_systemd import validate_units
 
 ROOT = Path(__file__).parents[2]
@@ -54,7 +58,7 @@ def _supported_root(tmp_path: Path) -> Path:
     (tmp_path / "sys/class/net/eth0/operstate").write_text("up\n", encoding="ascii")
     (tmp_path / "sys/firmware/devicetree/base/model").write_text("Raspberry Pi 5 Model B Rev 1.0\x00", encoding="ascii")
     (tmp_path / "dev/v4l/by-id/usb-purdue-rov-front-camera").write_text("device", encoding="ascii")
-    (tmp_path / "opt/purdue-rov-cv/models/gate_detector.onnx").write_bytes(b"model")
+    (tmp_path / "opt/purdue-rov-cv/models/crab_dection.onnx").write_bytes(b"model")
     return tmp_path
 
 
@@ -163,6 +167,7 @@ def test_all_systemd_services_implement_phase11_policy() -> None:
 
 def test_configured_topology_has_one_instance_per_enabled_item(tmp_path: Path) -> None:
     unit_root = tmp_path / "systemd"
+    unit_root.mkdir()
     for path in (ROOT / "systemd").iterdir():
         if path.is_file():
             (unit_root / path.name).parent.mkdir(parents=True, exist_ok=True)
@@ -170,9 +175,9 @@ def test_configured_topology_has_one_instance_per_enabled_item(tmp_path: Path) -
     configure(CONFIG, unit_root, "pi")
     configure(CONFIG, unit_root, "surface")
     assert (unit_root / "purdue-cv-onboard.target.wants/purdue-cv-camera@front_camera.service").is_symlink()
-    assert (unit_root / "purdue-cv-onboard.target.wants/purdue-cv-module@gate_detection.service").is_symlink()
+    assert (unit_root / "purdue-cv-onboard.target.wants/purdue-cv-module@crab_detection.service").is_symlink()
     assert (unit_root / "purdue-cv-surface.target.wants/purdue-cv-video-receiver@front_camera.service").is_symlink()
-    drop_in = unit_root / "purdue-cv-module@gate_detection.service.d/10-camera-readiness.conf"
+    drop_in = unit_root / "purdue-cv-module@crab_detection.service.d/10-camera-readiness.conf"
     assert "After=purdue-cv-camera@front_camera.service" in drop_in.read_text(encoding="utf-8")
 
     before = {
@@ -188,6 +193,97 @@ def test_configured_topology_has_one_instance_per_enabled_item(tmp_path: Path) -
         if path.is_file() or path.is_symlink()
     }
     assert after == before
+
+
+def test_surface_topology_omits_recorder_when_recording_is_disabled(tmp_path: Path) -> None:
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    data["recording"]["enabled"] = False
+    config_path = tmp_path / "mission.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    unit_root = tmp_path / "systemd"
+    unit_root.mkdir()
+    for path in (ROOT / "systemd").iterdir():
+        if path.is_file():
+            shutil.copy2(path, unit_root / path.name)
+
+    configure(config_path, unit_root, "surface")
+
+    wants = unit_root / "purdue-cv-surface.target.wants"
+    assert not (wants / "purdue-cv-recorder.service").exists()
+    assert (wants / "purdue-cv-video-receiver@front_camera.service").is_symlink()
+
+
+def test_chrony_rendering_uses_validated_mission_addresses(tmp_path: Path) -> None:
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    data["network"].update({"rov_ip": "10.4.8.2", "surface_ip": "10.4.8.1"})
+    data["clock"]["server_ip"] = "10.4.8.1"
+    config_path = tmp_path / "mission.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    assert "server 10.4.8.1 iburst" in render_chrony(config_path, "pi")
+    surface = render_chrony(config_path, "surface")
+    assert "allow 10.4.8.0/24" in surface
+    assert "bindaddress 10.4.8.1" in surface
+
+
+def test_installer_validates_before_changing_target_activation() -> None:
+    script = (ROOT / "scripts" / "install_deployment.sh").read_text(encoding="utf-8")
+    assert script.index("validate_deployment_candidate.py") < script.index("deployment_state.py capture")
+    assert script.index("purdue-cv-validate-environment") < script.index('systemctl enable "${target}"')
+
+
+def test_candidate_validation_checks_config_module_and_pi_artifact(tmp_path: Path) -> None:
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    artifact_bytes = b"candidate artifact fixture"
+    import hashlib
+
+    data["tasks"]["crab_detection"]["module_class"] = "purdue_rov_cv.modules.echo.EchoModule"
+    data["tasks"]["crab_detection"]["artifact"]["sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
+    config_path = tmp_path / "candidate.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    model_directory = tmp_path / "models"
+    model_directory.mkdir()
+    (model_directory / "crab_dection.onnx").write_bytes(artifact_bytes)
+
+    validate_candidate(config_path, model_directory, "pi")
+    (model_directory / "crab_dection.onnx").write_bytes(b"wrong artifact")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        validate_candidate(config_path, model_directory, "pi")
+
+
+def test_deployment_snapshot_restores_config_models_chrony_and_unit_links(tmp_path: Path) -> None:
+    config = tmp_path / "etc/purdue-rov-cv/mission.yaml"
+    chrony = tmp_path / "etc/chrony/conf.d/purdue-rov-cv.conf"
+    systemd = tmp_path / "etc/systemd/system"
+    models = tmp_path / "opt/purdue-rov-cv/models"
+    snapshot = tmp_path / "snapshot"
+    for path, contents in (
+        (config, b"old mission"),
+        (chrony, b"old chrony"),
+        (systemd / "purdue-cv-onboard.target", b"old unit"),
+        (models / "best.onnx", b"old model"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+    wants = systemd / "multi-user.target.wants"
+    wants.mkdir()
+    (wants / "purdue-cv-onboard.target").symlink_to("../purdue-cv-onboard.target")
+
+    capture(snapshot, config, chrony, systemd, models)
+    config.write_bytes(b"candidate mission")
+    chrony.write_bytes(b"candidate chrony")
+    (systemd / "purdue-cv-onboard.target").write_bytes(b"candidate unit")
+    (systemd / "purdue-cv-surface.target").write_bytes(b"new unit")
+    (models / "best.onnx").write_bytes(b"candidate model")
+
+    restore(snapshot, systemd)
+
+    assert config.read_bytes() == b"old mission"
+    assert chrony.read_bytes() == b"old chrony"
+    assert (systemd / "purdue-cv-onboard.target").read_bytes() == b"old unit"
+    assert not (systemd / "purdue-cv-surface.target").exists()
+    assert (wants / "purdue-cv-onboard.target").is_symlink()
+    assert (models / "best.onnx").read_bytes() == b"old model"
 
 
 def test_topology_reconciliation_removes_only_stale_managed_entries(tmp_path: Path) -> None:
@@ -453,14 +549,14 @@ def test_stability_requires_every_fresh_runtime_component_to_be_running() -> Non
     config = load_config(CONFIG, environ={})
     states = {
         "camera:front_camera": ComponentState.RUNNING,
-        "module:gate_detection": ComponentState.RUNNING,
+        "module:crab_detection": ComponentState.RUNNING,
         "video_receiver:front_camera": ComponentState.RUNNING,
         "recorder": ComponentState.RUNNING,
     }
     assert all(_runtime_component_results(config, {"component_states": states}).values())
-    states["module:gate_detection"] = ComponentState.ERROR
+    states["module:crab_detection"] = ComponentState.ERROR
     results = _runtime_component_results(config, {"component_states": states})
-    assert not results["module:gate_detection"]
+    assert not results["module:crab_detection"]
     del states["recorder"]
     results = _runtime_component_results(config, {"component_states": states})
     assert not results["recorder"]

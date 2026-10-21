@@ -7,11 +7,11 @@
 3. Generate and check in Python bindings with `scripts/generate_proto.sh`.
 4. Add protobuf and envelope round-trip tests.
 5. Implement `CVModule`; do not create another runner.
-6. Declare accepted pixel formats and validate source compatibility.
+6. Validate the actual frame layout. V1 `Frame` pixels are BGR8 `uint8` HxWx3 arrays from the camera path; explicitly handle or reject other layouts.
 7. Separate static configuration from the permitted dynamic fields.
 8. Add the task to canonical mission configuration.
 9. Add a deterministic known-input unit test.
-10. Exercise representative recorded video through the production reader.
+10. Exercise representative recorded video through the supported replay callback and adapt frames to the module test path; replay does not feed the live production runner.
 11. Set and verify the processing deadline.
 12. Emit standard frame, error, deadline, publish, and health metrics.
 13. Run unit, integration, full, coverage, type, lint, and format checks.
@@ -34,7 +34,9 @@ A module must not open a camera, shared-memory object, PUB/DEALER socket,
 database, or video stream. It must not build or serialize `MessageEnvelope`.
 Those resources belong to the runner and adjacent platform services.
 
-`EchoModule` is the minimal reference implementation. For
+`EchoModule` is the minimal reference implementation. The production mission uses
+`CrabDetectionModule` for the crab task; it validates its ONNX model during
+initialization and emits the registered `bounding_boxes_v1` message. For
 `bounding_boxes_v1`, it emits one deterministic full-frame `echo` detection with
 the current dynamic confidence threshold. It uses exactly the same worker,
 queue, envelope, PUB, control, and shutdown path as other task modules.
@@ -42,7 +44,8 @@ queue, envelope, PUB, control, and shutdown path as other task modules.
 Dynamic configuration arrives as native Python values converted with protobuf
 `MessageToDict`. The runner validates updates against the Phase 2 policy and
 accepts the current task's `max_input_fps` and `dynamic` fields plus runner-owned
-`diagnostics.publish_interval_ms` and dynamic `debug_snapshots` fields. Updates
+`diagnostics.publish_interval_ms`. Debug snapshot settings are reserved: enabling
+them fails static validation and runtime updates require a restart. Updates
 are merged into the active settings and delivered atomically to the module; an
 empty update is a no-op, and a callback failure rolls back the candidate values.
 Static deployment changes are rejected with `RESTART_REQUIRED` before invoking
@@ -51,7 +54,7 @@ the module, and the degraded module cannot be restarted until reset/relaunch.
 Each configured task is launched independently:
 
 ```bash
-purdue-cv-module-runner --task gate_detection --config /etc/purdue-rov-cv/mission.yaml
+purdue-cv-module-runner --task crab_detection --config /etc/purdue-rov-cv/mission.yaml
 ```
 
 The `purdue-cv-module@.service` systemd template preserves one task instance per

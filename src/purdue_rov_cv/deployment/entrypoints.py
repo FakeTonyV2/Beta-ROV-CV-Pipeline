@@ -61,7 +61,7 @@ def _health_main(role: str, argv: list[str] | None) -> int:
         maximum_offset_ms=config.clock.maximum_offset_ms,
         invalidate_after_failures=config.clock.invalid_after_failures,
     )
-    probe = ChronyClockProbe()
+    probe = ChronyClockProbe(expected_server_ip=str(config.clock.server_ip) if role == "system" else None)
     while not shutdown.is_set():
         status = monitor.poll(probe)
         disk = psutil.disk_usage("/")

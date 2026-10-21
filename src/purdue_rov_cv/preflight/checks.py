@@ -167,10 +167,10 @@ CHECK_SPECS = (
     ),
     CheckSpec(
         "PFL-018",
-        "Root and recording filesystems have required free space",
+        "Root and enabled recording filesystems have required free space",
         "DiskSpaceGuard",
         "root and recording.directory filesystems",
-        f"root free >= {2 * GIB} AND recording free >= {10 * GIB}",
+        f"root free >= {2 * GIB}; recording free >= {10 * GIB} when recording is enabled",
     ),
     CheckSpec(
         "PFL-019",
@@ -601,10 +601,14 @@ def evaluate_checks(config: AppConfig, snapshot: ProbeSnapshot) -> tuple[CheckRe
             specs["PFL-018"],
             snapshot.root_free_bytes is not None
             and snapshot.root_free_bytes >= 2 * GIB
-            and snapshot.recording_free_bytes >= 10 * GIB,
+            and (not config.recording.enabled or snapshot.recording_free_bytes >= 10 * GIB),
             (
                 f"root has {snapshot.root_free_bytes!r} bytes free (requires {2 * GIB}); "
-                f"recording filesystem has {snapshot.recording_free_bytes} bytes free (requires {10 * GIB})"
+                + (
+                    f"recording filesystem has {snapshot.recording_free_bytes} bytes free (requires {10 * GIB})"
+                    if config.recording.enabled
+                    else "recording is disabled; recording filesystem reserve is not required"
+                )
             ),
             {
                 "root_free_bytes": snapshot.root_free_bytes,
@@ -612,7 +616,7 @@ def evaluate_checks(config: AppConfig, snapshot: ProbeSnapshot) -> tuple[CheckRe
             },
             {
                 "minimum_root_free_bytes_inclusive": 2 * GIB,
-                "minimum_recording_free_bytes_inclusive": 10 * GIB,
+                "minimum_recording_free_bytes_inclusive": 10 * GIB if config.recording.enabled else None,
             },
         )
     )

@@ -20,7 +20,7 @@ The system is a Linux, process-isolated computer-vision pipeline for a Raspberry
 
 This is not a collection of OpenCV scripts because the mission problem includes stable USB identity, bounded latency under overload, process fault containment, typed cross-process/cross-host contracts, remote lifecycle control, timestamp validity, video/result correlation, recording, and supervised recovery. A CV developer owns deterministic frame-to-protobuf computation, model preprocessing/postprocessing, model compatibility, dynamic algorithm settings, and task tests. The runtime owns camera acquisition, decoded-frame transport, queues, lifecycle, control, envelopes, sockets, health, shutdown, recording, and systemd supervision. Keeping that boundary lets an algorithm fail without turning every platform concern into task-specific code.
 
-The architecture and most core mechanisms are **Implemented and verified** by automated tests. The product is not yet deployment-accepted: all 20 rows in `docs/phase11-acceptance-matrix.md` are `UNVERIFIED`. The production mission config also points `gate_detection` at `EchoModule`; it does not contain a gate detector. Therefore “Phase 11 code present” must not be reported as “the ROV CV deployment is accepted.”
+The architecture and most core mechanisms are **Implemented and verified** by automated tests. The product is not deployment-accepted: the 20 rows in `docs/phase11-acceptance-matrix.md` remain `UNVERIFIED` until final automated and physical evidence is recorded. The production mission config runs `crab_detection` through `CrabDetectionModule`; `EchoModule` remains a deterministic SDK example. Do not report deployment acceptance without the matrix evidence.
 
 ### Actual topology
 
@@ -259,18 +259,18 @@ cameras:
     allow_software_encode: false
     slot_capacity_bytes: 6220800
 tasks:
-  gate_detection:
-    module_class: purdue_rov_cv.modules.echo.EchoModule
+  crab_detection:
+    module_class: purdue_rov_cv.modules.crab_detection.CrabDetectionModule
     enabled: true
     input_camera: front_camera
     execution_target: rov_pi5
     max_input_fps: 15
     processing_deadline_ms: 100
-    publish_topic: cv.result.gate_detection.front_camera
+    publish_topic: cv.result.crab_detection.front_camera
     payload_type: bounding_boxes_v1
     dynamic: {confidence_threshold: 0.60}
-    artifact: {format: onnx, path: /opt/purdue-rov-cv/models/gate_detector.onnx,
-      sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,
+    artifact: {format: onnx, path: /opt/purdue-rov-cv/models/crab_dection.onnx,
+      sha256: a1bdc5df1a7259944f612f04af63b64c30958e18443acd8d2d6c926e4208cdf1,
       runtime: onnxruntime}
 ```
 
@@ -281,7 +281,7 @@ Static values require process/deployment restart. The runner accepts only these 
 - `tasks.<current>.max_input_fps`
 - `tasks.<current>.dynamic.confidence_threshold`
 - `diagnostics.publish_interval_ms`
-- `debug_snapshots.enabled`, `.maximum_rate_hz`, and `.jpeg_quality`
+- No `debug_snapshots.*` fields; the feature is reserved and these updates are static/rejected
 
 Candidate values are validated and merged before the module callback. Callback failure rolls back. Static updates return `RESTART_REQUIRED` and degrade the module.
 
@@ -291,9 +291,9 @@ Candidate values are validated and merged before the module callback. Callback f
 
 `ArtifactValidator` checks task execution target, file existence/readability, SHA-256, and importability of the named runtime. An optional injected load probe can add compatibility checks. In production the default load probe is `None`; actual model load, input/output compatibility, and warm-up belong to `CVModule.initialize()`.
 
-The base package does not depend on ONNX Runtime or TensorRT even though those runtime names are allowed by config. Deployment must install the selected runtime separately and the module must prove its own model contract.
+The locked Python environment includes ONNX Runtime for the production crab task. TensorRT remains an optional platform runtime and must be provisioned separately. The module validates its own model contract during initialization.
 
-> **Implementation note:** The task name/artifact describe gate detection, while `config/mission.yaml` loads `purdue_rov_cv.modules.echo.EchoModule`, which sets `requires_artifact = False` and emits one full-frame `echo` box. The current runtime behavior is Echo output and skipped runner artifact validation (although preflight still hashes the configured artifact); a real gate detector is **Documented but not implemented**.
+`CrabDetectionModule` validates ONNX metadata for the expected three labels and fixed input/output tensors, warms the session, and applies preprocessing, confidence filtering, class-wise NMS, and normalized coordinate conversion. Its deterministic tests do not replace Pi timing or physical camera acceptance. The checkpoint and exported ONNX files are local model assets and are intentionally excluded from Git; deployment checks the configured SHA-256 before copying the artifact.
 
 Keep three validation questions separate:
 
@@ -331,7 +331,7 @@ Replay is still valuable for deterministic consumer/debug work: MCAP can reprodu
 
 Wall clock (`time.time_ns`) is used for capture/publish/event timestamps and cross-host interpretation. Monotonic clocks are used for deadlines, queue waits, retries, cache expiry, and replay scheduling. Capture records both domains.
 
-Chrony is configured with the surface as local stratum 8 and the Pi polling `192.168.50.1`. Clock validity requires a reachable source, normal leap status, absolute offset strictly below the configured maximum (10 ms in mission config), and a successful observation no older than 15 seconds. Three consecutive failures invalidate cross-device latency; three valid recovery checks restore health. CV, video, and control continue while clock health is degraded. Consumers must not compute cross-host latency while `cross_device_latency_valid` is false.
+Chrony is rendered from the validated mission: the surface serves local stratum 8 on its configured tether address, and the Pi polls `clock.server_ip`. Clock validity requires a reachable source, normal leap status, absolute offset strictly below the configured maximum (10 ms in mission config), and a successful observation no older than 15 seconds. Three consecutive failures invalidate cross-device latency; three valid recovery checks restore health. CV, video, and control continue while clock health is degraded. Consumers must not compute cross-host latency while `cross_device_latency_valid` is false.
 
 - Use Unix nanoseconds to label capture/publication for recording and cross-process interpretation; never use them to enforce a timeout or measure an interval.
 - Use monotonic nanoseconds/seconds for deadlines, elapsed processing, retries, cache expiry, and replay scheduling; never compare monotonic values from different hosts or process boots.
@@ -365,7 +365,7 @@ The decision is written to `/run/purdue-rov-cv/mission-state.json`. Failure to p
 
 Two limitations matter:
 
-1. Production preflight currently requires a `recorder` component even when `recording.enabled` is false. This can make a valid non-recording deployment fail PFL-020.
+1. The recorder is required by PFL-020 only when `recording.enabled` is true. Disabled recording skips the recording filesystem reserve check; the independent root-space check remains.
 2. `MissionEnableGate.observe_runtime()` exists, but the router invokes authorization on each `START`; it does not continuously aggregate all components after enablement. Do not describe the mission-state file as an always-on safety interlock.
 3. Preflight marks synthetic component entries `network`, `chronyd`, `broker`, `control_router`, and `operator` from probe outcomes; `operator` is inferred from successful task status queries rather than observed as a long-lived process. Interpret PFL-020 as a composed readiness decision, not a literal process inventory.
 
@@ -377,9 +377,9 @@ All service units use `Restart=on-failure`, two-second retry, five-second stop t
 
 Deployment order is surface first, then Pi. Stop Pi first, then surface. `active (running)` is not application readiness; use health, task status, preflight, and mission-state evidence.
 
-The production boot path is `multi-user.target` → enabled role target → network-online/chrony and role services. The surface target starts health, statically starts recorder, and dynamically wants one `purdue-cv-video-receiver@<camera>` generated by `configure_deployment.py`. The onboard target starts broker/router/health and dynamically wants every camera and enabled module instance; generated module drop-ins add `After=`/`Requires=` for that task's camera. Operators then run production preflight and issue `START`; systemd never enables mission processing itself. A unit stopped by the start limit remains failed until the root cause is fixed and `systemctl reset-failed` is run.
+The production boot path is `multi-user.target` → enabled role target → network-online/chrony and role services. The surface target starts health and dynamically wants a recorder only when recording is enabled, along with one `purdue-cv-video-receiver@<camera>` for each surface-streamed camera. The onboard target starts broker/router/health and dynamically wants every camera and enabled module instance; generated module drop-ins add `After=`/`Requires=` for that task's camera. Operators then run production preflight and issue `START`; systemd never enables mission processing itself. A unit stopped by the start limit remains failed until the root cause is fixed and `systemctl reset-failed` is run.
 
-> **Implementation note:** The configuration/deployment code describes conditional recording, while `systemd/purdue-cv-surface.target` statically `Wants=purdue-cv-recorder.service` and the recorder entrypoint does not reject disabled config. The current runtime behavior is recorder startup with the surface target even when `recording.enabled: false`.
+The recorder entrypoint refuses direct startup when recording is disabled, before publishing a session file or creating a session. The target file itself has no static recorder dependency; generated instance links follow the validated recording setting.
 
 ## 18. Verification layers and acceptance
 
@@ -429,8 +429,8 @@ The authoritative matrix is currently entirely `UNVERIFIED`; CI success does not
 | Disk low before/during recording | recorder refuses <10 GiB at start or degrades/stops below 2 GiB with `DISK_SPACE_LOW` | existing files remain; free space and start a new session | `src/purdue_rov_cv/recording/disk.py`, `service.py` |
 | Recorder queue overflow | `RECORDER_QUEUE_FULL`, `recorder_queue_overflow`, `DEGRADED` | drops newest and emits rate-limited critical health; reduce traffic/fix storage writer | `src/purdue_rov_cv/runtime/queues.py`, `src/purdue_rov_cv/recording/service.py` |
 | Repeated systemd restart | after five starts/60 s unit becomes failed; inspect `NRestarts` | no recovery after limit; fix root cause, `systemctl reset-failed`, then start | `systemd/*.service`, systemd acceptance tool |
-| Preflight fails with recording disabled | PFL-020 reports missing recorder | no safe automatic bypass; known inventory bug must be fixed before non-recording acceptance | `src/purdue_rov_cv/preflight/probes.py::_required_component_states()` |
-| Surface records despite disabled config | recorder is active through target dependency | stop only under an approved operational plan; fix static target dependency | `systemd/purdue-cv-surface.target` |
+| Preflight fails with recording disabled | inspect PFL-020 component states and configuration-derived inventory | correct the generated deployment links or deployed configuration, then rerun preflight | `src/purdue_rov_cv/preflight/probes.py::_required_component_states()` |
+| Recorder starts despite disabled config | direct startup exits before creating a session; target links follow validated config | inspect the installed config and generated unit links | `src/purdue_rov_cv/recording/entrypoints.py`, `scripts/configure_deployment.py` |
 
 Exit statuses are 0 clean, 64 invalid arguments, 70 internal software error, 74 I/O error, 75 temporary/restartable failure, and 78 invalid configuration/non-restarting failure.
 
@@ -508,7 +508,7 @@ Read the mission config, strict config model/validation, envelope proto, topic/p
 
 ### First day
 
-Trace one synthetic frame through `CameraService`, SHM, `ModuleRunnerService`, `EchoModule`, `ResultPublisher`, the broker, and a validated subscriber. Then trace START through `ControlClient`, `ControlRouterService`, `PreflightStartAuthorizer`, and the module command cache. Run focused Phase 4–7 process tests and inspect structured logs/counters during one injected disconnect.
+Trace one synthetic frame through `CameraService`, SHM, `ModuleRunnerService`, a task module, `ResultPublisher`, the broker, and a validated subscriber. Use `EchoModule` for runner plumbing and the deterministic crab module tests for inference mapping. Then trace START through `ControlClient`, `ControlRouterService`, `PreflightStartAuthorizer`, and the module command cache. Run focused Phase 4–7 process tests and inspect structured logs/counters during one injected disconnect.
 
 ### First week
 

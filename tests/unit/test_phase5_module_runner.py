@@ -510,8 +510,10 @@ def test_runner_dynamic_struct_validation_readiness_and_lifecycle() -> None:
 
     debug = _request("set_dynamic_config", command_id=UUID(int=26).bytes)
     debug.set_dynamic_config.fields["debug_snapshots.jpeg_quality"] = 65
-    assert service._execute_command(debug).status == control_pb2.COMMAND_STATUS_COMPLETED
-    assert module.dynamic == {"debug_snapshots": {"enabled": True, "maximum_rate_hz": 1.0, "jpeg_quality": 65}}
+    response = service._execute_command(debug)
+    assert response.status == control_pb2.COMMAND_STATUS_REJECTED
+    assert response.error_code == ErrorCode.RESTART_REQUIRED
+    assert module.dynamic == {"confidence_threshold": 0.4}
     assert (
         service._execute_command(_request("stop", command_id=UUID(int=23).bytes)).resulting_state
         == ComponentState.READY

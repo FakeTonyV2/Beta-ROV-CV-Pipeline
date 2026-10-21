@@ -35,6 +35,8 @@ def recorder_main(argv: list[str] | None = None) -> ExitCode:
     parser.add_argument("--session-file", type=Path, help="publish the selected session for encoded receivers")
     args = parser.parse_args(argv)
     config = load_config(args.config)
+    if not config.recording.enabled:
+        raise ValueError("recording is disabled by configuration; recorder will not start")
     logger = configure_json_logger(
         device_id=config.device.device_id,
         process_name="purdue-cv-recorder",

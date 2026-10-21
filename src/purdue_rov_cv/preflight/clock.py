@@ -39,13 +39,15 @@ class ChronyClockProbe:
     def __init__(
         self,
         *,
+        expected_server_ip: str | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ) -> None:
+        self.expected_server_ip = expected_server_ip
         self._monotonic = monotonic
         self._run = run
 
-    def check(self) -> ClockSample:
+    def check(self, *, expected_server_ip: str | None = None) -> ClockSample:
         checked = self._monotonic()
         try:
             tracking = self._run(
@@ -66,9 +68,16 @@ class ChronyClockProbe:
             return ClockSample(False, False, float("inf"), checked, f"chrony query failed: {error}")
         offset_match = self._OFFSET.search(tracking.stdout)
         leap_match = self._LEAP.search(tracking.stdout)
-        reachable = sources.returncode == 0 and any(
-            line.lstrip().startswith(("^*", "^+", "#*", "#+")) for line in sources.stdout.splitlines()
-        )
+        source_lines = [line.split() for line in sources.stdout.splitlines() if line.split()]
+        expected_source = expected_server_ip or self.expected_server_ip
+        if expected_source is None:
+            reachable = sources.returncode == 0 and any(
+                fields[0] in {"^*", "^+", "#*", "#+"} for fields in source_lines
+            )
+        else:
+            reachable = sources.returncode == 0 and any(
+                len(fields) > 1 and fields[0] == "^*" and fields[1] == expected_source for fields in source_lines
+            )
         leap_normal = bool(leap_match and leap_match.group(1).strip().lower() == "normal")
         offset_ms = float(offset_match.group(1)) * 1_000.0 if offset_match else float("inf")
         detail = "" if tracking.returncode == 0 else tracking.stderr.strip() or "chronyc tracking failed"

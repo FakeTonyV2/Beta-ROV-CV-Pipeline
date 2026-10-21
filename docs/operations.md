@@ -34,15 +34,13 @@ sudo ./scripts/setup_system_deps.sh
 sudo ./scripts/install_deployment.sh pi config/mission.yaml
 ```
 
-Before the Pi installer, place the trusted production model at the exact
-`tasks.<id>.artifact.path` and set its real SHA-256 in `mission.yaml`. The sample
-hash is intentionally not a deployable model credential; the installer does not
-invent or download model artifacts. For example:
+Before the Pi installer, keep the approved model file in the checkout's
+`models/` directory and set its real SHA-256 in `mission.yaml`. The installer
+copies an enabled task artifact to its configured deployment path only after
+the local file matches that digest. It does not download model artifacts.
 
 ```bash
-sudo install -d -m 0755 /opt/purdue-rov-cv/models
-sudo install -m 0644 <trusted-gate-detector.onnx> /opt/purdue-rov-cv/models/gate_detector.onnx
-sha256sum /opt/purdue-rov-cv/models/gate_detector.onnx
+sha256sum models/crab_dection.onnx
 ```
 
 On the surface:
@@ -52,12 +50,14 @@ sudo ALLOW_NON_REFERENCE_PLATFORM=1 ./scripts/setup_system_deps.sh
 sudo ./scripts/install_deployment.sh surface config/mission.yaml
 ```
 
-The installer uses a non-editable install, creates only project-owned paths,
-installs a chrony drop-in, installs templated units, reconciles instance links
-exactly to the canonical configuration, reloads systemd, and runs environment
-validation. Rerunning it is supported. Stale project-generated links/drop-ins
-are removed, while modified or unmanaged entries are never overwritten or
-deleted silently. Review every reported modification.
+Before replacing the installed mission, the installer validates the candidate
+YAML, enabled module classes, and (on the Pi) each local model digest and model
+initialization. It snapshots the current mission, model directory, chrony
+drop-in, and project-owned systemd units/links. If a later installation or
+environment-validation step fails, it restores that snapshot and reloads
+systemd. The installer uses a non-editable install, generates role-specific
+chrony and unit topology, and enables exactly one role target after environment
+validation. It does not start the target.
 
 ## Startup and readiness
 
@@ -108,9 +108,9 @@ The operator and control-client roles intentionally share the installed `rov-cv`
 executable while retaining separate logical duties. From the surface:
 
 ```bash
-/opt/purdue-rov-cv/.venv/bin/rov-cv operator get_status gate_detection --config /etc/purdue-rov-cv/mission.yaml
-/opt/purdue-rov-cv/.venv/bin/rov-cv operator start gate_detection --config /etc/purdue-rov-cv/mission.yaml
-/opt/purdue-rov-cv/.venv/bin/rov-cv operator stop gate_detection --config /etc/purdue-rov-cv/mission.yaml
+/opt/purdue-rov-cv/.venv/bin/rov-cv operator get_status crab_detection --config /etc/purdue-rov-cv/mission.yaml
+/opt/purdue-rov-cv/.venv/bin/rov-cv operator start crab_detection --config /etc/purdue-rov-cv/mission.yaml
+/opt/purdue-rov-cv/.venv/bin/rov-cv operator stop crab_detection --config /etc/purdue-rov-cv/mission.yaml
 ```
 
 The recorder starts with the surface target when `recording.enabled` is true and

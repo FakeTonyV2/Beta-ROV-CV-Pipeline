@@ -17,6 +17,12 @@ Phase 9 adds the complete simulated full-system preflight, system-health and
 mission gate, surface operator client, deterministic clock/fault probes, and a
 real-process startup/shutdown harness. See [Phase 9 preflight](docs/phase9-preflight.md).
 
+Phase 11 adds role-based systemd deployment and acceptance tooling. The current
+production mission runs the three-class crab detector through the standard
+module runner; `EchoModule` remains a development/reference task. See the
+[crab detector guide](docs/crab-detection.md), [setup and usage guide](docs/setup-and-usage-guide.md),
+[maintainer guide](docs/senior-maintainer-guide.md), and [acceptance matrix](docs/phase11-acceptance-matrix.md).
+
 Reference platforms:
 
 - Raspberry Pi 5: ARM64, Ubuntu Server 24.04 LTS, Python 3.12.x, systemd, tethered Ethernet, GStreamer >= 1.22.
@@ -86,7 +92,7 @@ translate failures to the supervisor exit-code contract:
 ```bash
 purdue-cv-broker --config config/mission.yaml
 purdue-cv-control-router --config config/mission.yaml
-purdue-cv-module-runner --task gate_detection --config config/mission.yaml
+purdue-cv-module-runner --task crab_detection --config config/mission.yaml
 purdue-cv-camera --camera front_camera --config config/mission.yaml
 purdue-cv-video-receiver --camera front_camera --config config/mission.yaml
 ```

@@ -161,6 +161,10 @@ generated/cpp/
 ###############################################################################
 
 models/
+!models/
+models/*
+!models/model_test.py
+!models/pt_to_onnx_converter.py
 *.onnx
 *.engine
 *.plan

@@ -4,7 +4,7 @@ network: {tether_interface: eth0, rov_ip: 192.168.50.2, surface_ip: 192.168.50.1
 clock: {server_ip: 192.168.50.1, maximum_offset_ms: 25, check_interval_seconds: 5, invalid_after_failures: 3}
 messaging: {broker: {publisher_endpoint: tcp://192.168.50.1:5555, subscriber_endpoint: tcp://192.168.50.1:5556}, control: {client_endpoint: tcp://192.168.50.1:5560, module_endpoint: ipc:///run/purdue-rov-cv/module-control.sock}, max_message_bytes: 4194304, result_send_hwm: 5, result_receive_hwm: 5}
 diagnostics: {publish_interval_ms: 1000, log_level: DEBUG}
-debug_snapshots: {enabled: true, maximum_rate_hz: 1.0, maximum_width: 640, maximum_height: 360, jpeg_quality: 70}
+debug_snapshots: {enabled: false, maximum_rate_hz: 1.0, maximum_width: 640, maximum_height: 360, jpeg_quality: 70}
 recording: {enabled: false, directory: /tmp/purdue-rov-cv/recordings, video_segment_seconds: 300, minimum_free_space_gib: 10, structured: {chunk_size_bytes: 1048576, compression: zstd}}
 camera_limits: {maximum_configured: 16, maximum_active: 12}
 cameras:

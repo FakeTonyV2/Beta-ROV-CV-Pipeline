@@ -48,9 +48,10 @@ five-attempt start limit, SIGTERM delivery, five-second bound, and cleanup.
 
 `scripts/install_chrony.sh` installs only
 `/etc/chrony/conf.d/purdue-rov-cv.conf`; it does not overwrite the main chrony
-configuration. The surface uses local stratum 8, allows `192.168.50.0/24`, binds
-`192.168.50.1`, and permits initial stepping. The Pi polls `192.168.50.1` with
-`iburst minpoll 2 maxpoll 4`, `makestep 0.1 3`, and `rtcsync`.
+configuration. `scripts/configure_chrony.py` renders this managed drop-in from
+the validated mission: surface IP and the V1 `/24` tether subnet come from
+`network`, while the Pi source comes from `clock.server_ip` (which must match
+`network.surface_ip`).
 
 System health polls the production `chronyc` evaluator at the configured five
 seconds. Valid means reachable source, normal leap, absolute offset below 10 ms,

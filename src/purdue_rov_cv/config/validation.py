@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, ip_network
 from pathlib import Path
 
 from purdue_rov_cv.wire.payloads import PAYLOAD_REGISTRY
@@ -137,6 +137,35 @@ def validate_static_config(config: AppConfig) -> tuple[ConfigIssue, ...]:
                 value=config.schema_version,
             )
         )
+    if config.clock.server_ip != config.network.surface_ip:
+        issues.append(
+            _issue(
+                "CLOCK_SERVER_MISMATCH",
+                "clock.server_ip",
+                "V1 surface chrony serves network.surface_ip; clock.server_ip must match it",
+                value=str(config.clock.server_ip),
+                expected=str(config.network.surface_ip),
+            )
+        )
+    tether_subnet = ip_network(f"{config.network.rov_ip}/24", strict=False)
+    if config.network.surface_ip not in tether_subnet:
+        issues.append(
+            _issue(
+                "TETHER_SUBNET_MISMATCH",
+                "network.surface_ip",
+                "V1 Pi and surface addresses must share the same /24 tether subnet",
+                value=str(config.network.surface_ip),
+                expected_subnet=str(tether_subnet),
+            )
+        )
+    if config.debug_snapshots.enabled:
+        issues.append(
+            _issue(
+                "DEBUG_SNAPSHOTS_UNSUPPORTED",
+                "debug_snapshots.enabled",
+                "debug snapshot request/publication is reserved and not implemented in the V1 runtime",
+            )
+        )
 
     for section_name, mapping in (("cameras", config.cameras), ("tasks", config.tasks)):
         for identifier in mapping:
@@ -210,6 +239,16 @@ def validate_static_config(config: AppConfig) -> tuple[ConfigIssue, ...]:
                         "raw capture must enable CV or an explicitly opted-in surface stream",
                     )
                 )
+        if config.recording.enabled and camera.stream_to_surface and camera.format is CameraFormat.MJPEG:
+            issues.append(
+                _issue(
+                    "CAMERA_MJPEG_RECORDING_UNSUPPORTED",
+                    f"cameras.{camera_id}.format",
+                    "MJPEG surface streaming is supported, but encoded recording currently requires H.264",
+                    camera_id=camera_id,
+                    format=camera.format.value,
+                )
+            )
         allocation = derive_stream_allocation(camera_id, camera.stream_index)
         if camera.stream_index in allocations_by_index:
             issues.append(

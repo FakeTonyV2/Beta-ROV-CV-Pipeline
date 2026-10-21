@@ -102,7 +102,7 @@ def test_loader_rejects_duplicate_yaml_keys_with_canonical_config_error(tmp_path
         lambda data: data["clock"].update({"maximum_offset_ms": "10"}),
         lambda data: data["debug_snapshots"].update({"enabled": "true"}),
         lambda data: data["cameras"]["front_camera"].update({"adapter": "unknown"}),
-        lambda data: data["tasks"]["gate_detection"].update({"module_class": "   "}),
+        lambda data: data["tasks"]["crab_detection"].update({"module_class": "   "}),
     ],
 )
 def test_pydantic_strictness_and_enums(mutate):
@@ -117,9 +117,9 @@ def test_pydantic_strictness_and_enums(mutate):
     [
         (lambda data: data.update({"schema_version": 2}), "UNSUPPORTED_SCHEMA_VERSION"),
         (lambda data: data["cameras"].__setitem__("Bad-ID", data["cameras"]["front_camera"]), "IDENTIFIER_INVALID"),
-        (lambda data: data["tasks"]["gate_detection"].update({"input_camera": "missing"}), "TASK_CAMERA_MISSING"),
+        (lambda data: data["tasks"]["crab_detection"].update({"input_camera": "missing"}), "TASK_CAMERA_MISSING"),
         (
-            lambda data: data["tasks"]["gate_detection"].update({"publish_topic": "cv.result.wrong.front_camera"}),
+            lambda data: data["tasks"]["crab_detection"].update({"publish_topic": "cv.result.wrong.front_camera"}),
             "TASK_TOPIC_MISMATCH",
         ),
         (
@@ -141,9 +141,9 @@ def test_pydantic_strictness_and_enums(mutate):
             ),
             "CAMERA_PATH_KIND_MISMATCH",
         ),
-        (lambda data: data["tasks"]["gate_detection"]["artifact"].update({"sha256": "bad"}), "CONFIG_SCHEMA_INVALID"),
+        (lambda data: data["tasks"]["crab_detection"]["artifact"].update({"sha256": "bad"}), "CONFIG_SCHEMA_INVALID"),
         (
-            lambda data: data["tasks"]["gate_detection"]["artifact"].update(
+            lambda data: data["tasks"]["crab_detection"]["artifact"].update(
                 {"format": "tensorrt", "runtime": "onnxruntime"}
             ),
             "ARTIFACT_RUNTIME_INCOMPATIBLE",
@@ -299,30 +299,28 @@ def test_camera_operational_limits_are_configured_not_hard_coded():
 def test_recursive_diff_and_dynamic_transaction_plan():
     active = _valid_config()
     dynamic_data = _data()
-    dynamic_data["tasks"]["gate_detection"]["dynamic"]["confidence_threshold"] = 0.7
-    dynamic_data["debug_snapshots"]["jpeg_quality"] = 65
+    dynamic_data["tasks"]["crab_detection"]["dynamic"]["confidence_threshold"] = 0.7
     proposed = parse_config_data(dynamic_data)
     diff = diff_configs(active, proposed)
     assert [change.path for change in diff.changes] == [
-        "debug_snapshots.jpeg_quality",
-        "tasks.gate_detection.dynamic.confidence_threshold",
+        "tasks.crab_detection.dynamic.confidence_threshold",
     ]
     assert all(change.classification is ChangeClass.DYNAMIC for change in diff.changes)
     plan = plan_dynamic_update(active, proposed)
     assert plan.state is TransactionPlanState.PLANNED
-    assert plan.affected_modules == ("gate_detection",)
+    assert plan.affected_modules == ("crab_detection",)
     assert plan.dynamic_updates[0].values["dynamic.confidence_threshold"] == 0.7
     assert plan.dynamic_updates[0].previous_values["dynamic.confidence_threshold"] == 0.6
-    assert plan.rollback_order == ("gate_detection",)
+    assert plan.rollback_order == ("crab_detection",)
     assert plan.event and plan.event["event_type"] == "configuration_changed"
 
 
 def test_dynamic_change_for_disabled_task_does_not_target_an_absent_module():
     active_data = _data()
-    active_data["tasks"]["gate_detection"]["enabled"] = False
+    active_data["tasks"]["crab_detection"]["enabled"] = False
     active = parse_config_data(active_data)
     proposed_data = copy.deepcopy(active_data)
-    proposed_data["tasks"]["gate_detection"]["dynamic"]["confidence_threshold"] = 0.7
+    proposed_data["tasks"]["crab_detection"]["dynamic"]["confidence_threshold"] = 0.7
 
     plan = plan_dynamic_update(active, parse_config_data(proposed_data))
 
@@ -333,7 +331,8 @@ def test_dynamic_change_for_disabled_task_does_not_target_an_absent_module():
 
 
 def test_unlisted_dynamic_field_path_is_static_by_safe_default():
-    assert classify_field_path("tasks.gate_detection.dynamic.future_threshold") is ChangeClass.STATIC
+    assert classify_field_path("tasks.crab_detection.dynamic.future_threshold") is ChangeClass.STATIC
+    assert classify_field_path("debug_snapshots.jpeg_quality") is ChangeClass.STATIC
 
 
 def test_static_and_unsupported_changes_reject_an_atomic_plan():
@@ -445,3 +444,31 @@ def test_injected_hardware_probe_is_separate_from_static_validation():
 
     issues = validate_hardware_config(_valid_config(), MissingCameraProbe())
     assert {issue.code for issue in issues} == {"CAMERA_NOT_FOUND"}
+
+
+def test_mjpeg_recording_is_rejected_but_mjpeg_stream_without_recording_is_valid():
+    data = _data()
+    data["cameras"]["front_camera"]["format"] = "mjpeg"
+    with pytest.raises(ConfigStaticValidationError, match="CAMERA_MJPEG_RECORDING_UNSUPPORTED"):
+        parse_config_data(data)
+
+    data["recording"]["enabled"] = False
+    assert parse_config_data(data).cameras["front_camera"].format.value == "mjpeg"
+
+
+def test_debug_snapshots_cannot_be_enabled_until_runtime_support_exists():
+    data = _data()
+    data["debug_snapshots"]["enabled"] = True
+    with pytest.raises(ConfigStaticValidationError, match="DEBUG_SNAPSHOTS_UNSUPPORTED"):
+        parse_config_data(data)
+
+
+def test_surface_clock_and_tether_must_match_configured_v1_topology():
+    data = _data()
+    data["network"]["surface_ip"] = "10.4.8.1"
+    with pytest.raises(ConfigStaticValidationError, match="CLOCK_SERVER_MISMATCH"):
+        parse_config_data(data)
+
+    data["clock"]["server_ip"] = "10.4.8.1"
+    with pytest.raises(ConfigStaticValidationError, match="TETHER_SUBNET_MISMATCH"):
+        parse_config_data(data)

@@ -44,9 +44,6 @@ _DYNAMIC_PATTERNS = (
     "tasks.*.max_input_fps",
     "tasks.*.dynamic.confidence_threshold",
     "diagnostics.publish_interval_ms",
-    "debug_snapshots.enabled",
-    "debug_snapshots.maximum_rate_hz",
-    "debug_snapshots.jpeg_quality",
 )
 _STATIC_PATTERNS = (
     "schema_version",
@@ -64,6 +61,7 @@ _STATIC_PATTERNS = (
     "tasks.*.publish_topic",
     "tasks.*.payload_type",
     "tasks.*.artifact.*",
+    "debug_snapshots.*",
 )
 
 

@@ -1,5 +1,7 @@
 # Purdue ROV CV Runtime — Setup, Development & Operations Guide
 
+For another run on the physical ROV, start with [installation and camera bring-up](#10-installing-the-actual-rov-and-surface-deployment) and the [deployed smoke test](#11-operating-the-pi-and-surface). The current production mission can be brought up for camera, video and task readiness checks. A cold start of inference is blocked by the preflight dependency described in [section 14](#14-running-preflight-and-authorizing-a-mission).
+
 This is the practical path from a clean checkout to development, deployment, operation, and verification. Commands are taken from the checked-in entry points and scripts. Run Linux commands from the repository root unless an absolute deployed path is shown.
 
 ## 1. What this repository installs
@@ -179,22 +181,23 @@ Typical failures include `TASK_TOPIC_MISMATCH`, an enabled task pointing at a no
 
 ## 6. Provisioning a physical UVC camera
 
-Connect cameras in their intended hub ports, then inspect and generate stable identity rules:
+Connect cameras in their intended hub ports. Inspect the capture nodes and use the actual stable device link in the candidate mission. The checked-in `/dev/v4l/by-id/usb-purdue-rov-front-camera` is an example to check against the hardware. The provisioning tool validates an existing `by_id` link. It generates a rule only for a configured fallback identity when a stronger by-id identity is unavailable.
 
 ```bash
 v4l2-ctl --list-devices
+ls -l /dev/v4l/by-id/
 udevadm info --query=property --name=/dev/video0
 .venv/bin/python scripts/configure_udev.py config/mission.yaml --json
-sudo .venv/bin/python scripts/configure_udev.py config/mission.yaml --install
 ```
 
-Unplug/replug after rule installation and confirm the configured stable path resolves. Then prove the exact mode:
+For a configured fallback, install the rules with `sudo .venv/bin/python scripts/configure_udev.py config/mission.yaml --install`, then unplug/replug and confirm the configured link resolves. Check the advertised modes using your actual link:
 
 ```bash
-CAMERA_PATH=/dev/v4l/by-id/usb-purdue-rov-front-camera
+CAMERA_PATH=/dev/v4l/by-id/REPLACE_WITH_ACTUAL_CAPTURE_LINK
 v4l2-ctl --device "$CAMERA_PATH" --list-formats-ext
-.venv/bin/rov-cv config validate config/mission.yaml --probe-hardware
 ```
+
+The full `config validate --probe-hardware` check also looks for the configured artifact at its absolute path and checks port availability. Run it on the Pi after provisioning the artifact, with deployed services stopped.
 
 Run one production camera manually when systemd is not active:
 
@@ -202,7 +205,7 @@ Run one production camera manually when systemd is not active:
 .venv/bin/purdue-cv-camera --camera front_camera --config config/mission.yaml
 ```
 
-The service re-resolves identity and retries after disconnect in code. This is not physical proof. For opt-in hardware tests:
+For opt-in hardware tests, stop the deployed camera/receiver targets and any manual camera processes first. Use the same reviewed camera configuration and a checkout virtual environment. Run the unplug/replug case during a separate bench fault test.
 
 ```bash
 export PURDUE_ROV_CV_HARDWARE_CONFIG="$PWD/config/mission.yaml"
@@ -417,12 +420,12 @@ For all task results, subscribe with `socket.setsockopt(zmq.SUBSCRIBE, b"cv.resu
 The supported operator path is:
 
 ```bash
-rov-cv operator get_status crab_detection --config /etc/purdue-rov-cv/mission.yaml
-rov-cv operator start crab_detection --config /etc/purdue-rov-cv/mission.yaml
-rov-cv operator stop crab_detection --config /etc/purdue-rov-cv/mission.yaml
+sudo -u purdue-cv /opt/purdue-rov-cv/.venv/bin/rov-cv operator get_status crab_detection --config /etc/purdue-rov-cv/mission.yaml
+sudo -u purdue-cv /opt/purdue-rov-cv/.venv/bin/rov-cv operator start crab_detection --config /etc/purdue-rov-cv/mission.yaml
+sudo -u purdue-cv /opt/purdue-rov-cv/.venv/bin/rov-cv operator stop crab_detection --config /etc/purdue-rov-cv/mission.yaml
 ```
 
-Optional `--preflight-report /var/lib/purdue-rov-cv/preflight.json` adds an observation to operator JSON output; it does not bypass or replace the router's production START authorization.
+Run these commands on the surface. The service account can read the installed mission YAML. Issue `START` after a passing production preflight on the Pi, subject to the current cold-start blocker in section 14. The optional `--preflight-report` reads a file local to the operator command for display. The router reads its own canonical report on the Pi.
 
 Use `ControlClient` for supported runner commands not exposed by the CLI:
 
@@ -454,29 +457,40 @@ After an acknowledgement timeout, the client returns `OUTCOME_UNKNOWN` and does 
 
 ## 10. Installing the actual ROV and surface deployment
 
-Use the same reviewed mission YAML on both hosts. The Pi deploys the ONNX Runtime dependency from `requirements.lock`. Keep the local artifact `models/crab_dection.onnx` available in the checkout and ensure its digest matches `tasks.crab_detection.artifact.sha256`; the installer copies only a hash-matching artifact to `/opt/purdue-rov-cv/models/`.
+Use the same reviewed checkout revision and mission YAML on both hosts. Record the output of `git rev-parse HEAD` and `git status --short` from each checkout. Commands below assume you are in the repository root on the named Linux host.
 
-The mission config uses surface `192.168.50.1`, Pi `192.168.50.2`, and tether interface `eth0`. Configure those addresses outside this repository, connect the dedicated tether, and verify `ip -brief link show eth0`, `ip -brief address show eth0`, and mutual reachability. `install_chrony.sh surface` renders a local stratum-8 server bound to the configured surface address; `install_chrony.sh pi` renders the Pi client for configured `clock.server_ip`. Confirm both with `chronyc -n tracking` and `chronyc -n sources -v`.
-
-```bash
-sha256sum models/crab_dection.onnx
-```
-
-On the Pi:
+- **Camera and model.** The shipped mission requests `front_camera` at H.264 1920×1080, 30 FPS, and runs `crab_detection` on the Pi at up to 15 input FPS with a 100 ms processing deadline and confidence threshold 0.60. Check the actual camera identity and tuple in section 6. Stage `models/crab_dection.onnx` in the Pi checkout and compare its SHA-256 to `tasks.crab_detection.artifact.sha256`. The ONNX file is provisioned separately from Git. The surface installer does not require a local copy.
+- **Tether.** The mission uses surface `192.168.50.1/24`, Pi `192.168.50.2/24`, and interface name `eth0` on both hosts. Configure the addresses on the hosts. The environment validator checks the configured interface, local address and peer reachability on each host. Check `ip -brief address` and ping the other host before installing. With the shipped config, the Pi receives TCP 5555, 5556 and 5560. The surface receives RTP on UDP 5000 and serves chrony on UDP 123.
+- **Recording.** The shipped mission enables recording. Check for at least 10 GiB free on the recording filesystem on the surface. The Pi preflight also checks free space at the configured recording path on the Pi. For a bring-up without recording, set `recording.enabled: false` in the same candidate on both hosts. Use a recording-enabled deployment for recording and replay acceptance.
 
 ```bash
-sudo ./scripts/setup_system_deps.sh
-sudo ./scripts/install_deployment.sh pi config/mission.yaml
+sha256sum models/crab_dection.onnx  # Pi checkout
 ```
 
-On the surface:
+For an existing installation, capture any logs you want to keep and stop the Pi target first, then the surface target, before reinstalling. On a fresh installation, skip the stop step. Install the surface first so its time source can come up, then install the Pi:
 
 ```bash
-sudo env ALLOW_NON_REFERENCE_PLATFORM=1 ./scripts/setup_system_deps.sh
-sudo ./scripts/install_deployment.sh surface config/mission.yaml
+# Surface
+sudo env ALLOW_NON_REFERENCE_PLATFORM=1 bash scripts/setup_system_deps.sh
+sudo bash scripts/install_deployment.sh surface config/mission.yaml
+
+# Pi
+sudo bash scripts/setup_system_deps.sh
+sudo bash scripts/install_deployment.sh pi config/mission.yaml
 ```
 
-The installer records revision/worktree state, validates the candidate mission and Pi model before applying deployment changes, installs non-editably, reconciles instances, and renders chrony from the candidate. It snapshots the current mission, model directory, chrony drop-in, and project-owned systemd files/links; a later failure restores that state. Environment validation must pass before one role target is enabled. The installer does not start the target.
+Use the path to your reviewed YAML in place of `config/mission.yaml` on both hosts if you keep a separate field config. Both installers validate the candidate before replacing deployment files. The Pi installer also checks the model digest and runs module initialization using the staged model. The installer enables the role target after environment validation. Start it separately for the test.
+
+If install fails, inspect the terminal output and, if produced, `/var/lib/purdue-rov-cv/deployment-environment.json`. The installer attempts to restore its snapshot of the mission, chrony drop-in, project systemd files and links, and deployment model directory. Confirm restored files, config ownership and readability, and live chrony state before starting an older deployment. Package and virtual environment setup precedes the snapshot.
+
+On the Pi, after install and before either target starts:
+
+```bash
+sudo -u purdue-cv /opt/purdue-rov-cv/.venv/bin/rov-cv config validate \
+  /etc/purdue-rov-cv/mission.yaml --probe-hardware
+```
+
+On both hosts, compare `sudo sha256sum /etc/purdue-rov-cv/mission.yaml`. Check `chronyc -n tracking` and `chronyc -n sources -v`. On the Pi, the selected server should be the configured surface address.
 
 With `recording.enabled: false`, generated surface topology omits the recorder, direct recorder startup refuses before creating a session, and preflight skips the recording-filesystem reserve while retaining its root-space check.
 
@@ -486,31 +500,50 @@ Start surface first, then Pi:
 
 ```bash
 # Surface
-sudo ./scripts/start_deployment.sh surface
+sudo bash scripts/start_deployment.sh surface
 
 # Pi
-sudo ./scripts/start_deployment.sh pi
+sudo bash scripts/start_deployment.sh pi
 ```
 
-Inspect both topology and application readiness:
+Inspect the services on their respective hosts:
 
 ```bash
+# Surface
 systemctl status purdue-cv-surface.target
-systemctl status 'purdue-cv-video-receiver@*' purdue-cv-recorder purdue-cv-surface-health
+systemctl status purdue-cv-video-receiver@front_camera purdue-cv-surface-health
+# If recording is enabled
+systemctl status purdue-cv-recorder
+
+# Pi
 systemctl status purdue-cv-onboard.target
-systemctl status purdue-cv-broker purdue-cv-control-router 'purdue-cv-camera@*' 'purdue-cv-module@*' purdue-cv-system-health
+systemctl status purdue-cv-broker purdue-cv-control-router purdue-cv-camera@front_camera \
+  purdue-cv-module@crab_detection purdue-cv-system-health
 ```
 
 A running PID is not readiness. A task needs initialization, registration, SHM attachment, a first frame, and an authorized `START` before it is `RUNNING`.
 
 The surface side owns one receiver for each `stream_to_surface` camera, the recorder/session file, surface resource/clock health, and on-demand operator/control clients. It connects to the Pi broker subscriber endpoint for FrameIndex/results and to Pi control port 5560, while its receivers listen on derived RTP UDP ports. The Pi side owns broker, router, cameras, SHM, modules, and system health. There is no built-in video display; receiver fan-out/correlation is a library seam.
 
-After both targets are ready, run production preflight on the Pi as shown in section 14, then issue `rov-cv operator start` from the surface. Mission enablement is an application command, not a systemd target state.
+Run the surface `get_status` command from section 9. On a fresh deployment, expect `READY` once the runner has loaded its model, registered, and read a camera frame. Confirm the camera and receiver are active and watch their logs. Then capture a short camera smoke artifact on the Pi:
+
+```bash
+sudo install -d -o purdue-cv -g purdue-cv -m 0750 /var/lib/purdue-rov-cv/hil
+sudo -u purdue-cv /opt/purdue-rov-cv/.venv/bin/python \
+  /opt/purdue-rov-cv/tools/run_phase11_hil.py camera-hub \
+  --config /etc/purdue-rov-cv/mission.yaml --duration 30 --smoke \
+  --output /var/lib/purdue-rov-cv/hil/camera-smoke.json
+```
+
+The smoke command exits 1 with an `UNVERIFIED` result by design. Inspect measured FPS, SHM writes, RTP traffic and FrameIndex correlation in the JSON. Capture production preflight next (section 14). Camera and video checks can run while the task is idle. A successful deployed START and decoded task results are needed for a full inference test. Save the JSON, preflight report and journals from both hosts before rerunning or shutting down. Use the [Phase 11 deployment guide](phase11-deployment.md#hil-commands-and-artifacts) for longer runs and the [acceptance matrix](phase11-acceptance-matrix.md) to track evidence.
 
 Stop Pi first, then surface:
 
 ```bash
+# Pi
 sudo systemctl stop purdue-cv-onboard.target
+
+# Surface
 sudo systemctl stop purdue-cv-surface.target
 ```
 
@@ -591,6 +624,8 @@ sudo -u purdue-cv /opt/purdue-rov-cv/.venv/bin/rov-cv preflight \
 
 Exit 0 means all required checks passed, 1 means a required check failed, and 2 means execution/evidence failure. The control router accepts `START` only while that canonical report is at most 30 seconds old, matches config, and current health/camera/artifact/module gates also pass. Inspect `/run/purdue-rov-cv/mission-state.json` for the decision.
 
+**Current production cold-start blocker.** PFL-019 requires each enabled task to process at least ten frames during the probe window. A freshly initialized runner reaches `READY` but only calls `process()` in `RUNNING` or `DEGRADED`. The router requires a passing report before forwarding the first `START`. With the shipped enabled crab task, expect PFL-019 to fail even when the model loads and video works. Save the report and runner/router journals. Use the camera smoke run and the opt-in UVC tests for independent hardware evidence. Full deployed inference and START acceptance require a code fix and a fresh production retest.
+
 The report covers strict config and hashes; tether/ping; broker round-trip and control status; chrony; stable camera identity and exact mode; simultaneous run duration, FPS, and maximum gap; RTP and exact FrameIndex correlation; CPU/memory/root/recording disk; temperature/throttling observations; task frame processing; and required component states. Human output names each PFL check; JSON includes version, run identity, evidence kind, measurements, fatality, and result for automation. Correct the specific failing subsystem—do not edit the report or bypass router authorization.
 
 The required component inventory includes the recorder only when recording is enabled. A simulated pass does not prove physical UVC, RTP, clock, model, or deployed component behavior.
@@ -626,6 +661,7 @@ The standalone system-health files contain local resource/clock observations, no
 | camera repeatedly degrades | USB/hub power, `v4l2-ctl`, GStreamer journal | restore hardware; reconnect loop retries automatically |
 | module remains `STARTING` | router registration, camera frame/SHM, initialize log | restore dependency; verify task/class/artifact |
 | task `START` rejected | preflight age/result, health age, SHM frame age, model hash, registration | repair failed gate and rerun preflight immediately |
+| task is `READY` but PFL-019 has zero processed frames | cold-start dependency between preflight and START | capture the report and logs; see section 14 |
 | no subscriber output | endpoint direction, topic prefix, subscriber startup timing | connect to subscriber endpoint and start SUB first |
 | dropped/late results | cap-one/cap-four queues, deadlines, PUB HWM | reduce task input FPS or processing cost |
 | video but no exact correlation | FrameIndex broker path and identity counters | repair data path; do not reuse stale result |
@@ -665,7 +701,7 @@ Run focused tests while developing, then the repository gates:
 After protobuf changes:
 
 ```bash
-PATH="$PWD/.venv/bin:$PATH" ./scripts/generate_proto.sh
+PATH="$PWD/.venv/bin:$PATH" bash scripts/generate_proto.sh
 git diff --exit-code -- generated/python
 ```
 

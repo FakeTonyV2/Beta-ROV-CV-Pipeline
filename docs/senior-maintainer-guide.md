@@ -1,6 +1,6 @@
 # Purdue ROV CV Runtime — Senior Maintainer & Architecture Guide
 
-This guide describes the repository as it exists at the end of the Phase 11 implementation effort. It is deliberately implementation-led: a checked-in schema or design note is not treated as a working production feature unless a runtime owner and verification evidence also exist.
+This guide describes the current Phase 11 runtime and its deployed test path. For bench commands and host setup, see the [setup and operations guide](setup-and-usage-guide.md#10-installing-the-actual-rov-and-surface-deployment).
 
 Status labels used throughout follow the repository-review convention:
 
@@ -20,7 +20,7 @@ The system is a Linux, process-isolated computer-vision pipeline for a Raspberry
 
 This is not a collection of OpenCV scripts because the mission problem includes stable USB identity, bounded latency under overload, process fault containment, typed cross-process/cross-host contracts, remote lifecycle control, timestamp validity, video/result correlation, recording, and supervised recovery. A CV developer owns deterministic frame-to-protobuf computation, model preprocessing/postprocessing, model compatibility, dynamic algorithm settings, and task tests. The runtime owns camera acquisition, decoded-frame transport, queues, lifecycle, control, envelopes, sockets, health, shutdown, recording, and systemd supervision. Keeping that boundary lets an algorithm fail without turning every platform concern into task-specific code.
 
-The architecture and most core mechanisms are **Implemented and verified** by automated tests. The product is not deployment-accepted: the 20 rows in `docs/phase11-acceptance-matrix.md` remain `UNVERIFIED` until final automated and physical evidence is recorded. The production mission config runs `crab_detection` through `CrabDetectionModule`; `EchoModule` remains a deterministic SDK example. Do not report deployment acceptance without the matrix evidence.
+The checked-in mission has one `front_camera` at H.264 1080p30 and one enabled `crab_detection` task on the Pi. The task uses `CrabDetectionModule`, the pinned ONNX artifact, and the `bounding_boxes_v1` payload. The surface receives video and records when enabled. `EchoModule` is the deterministic SDK example. All 20 rows in the [acceptance matrix](phase11-acceptance-matrix.md) are `UNVERIFIED`. The first production START is currently blocked by the PFL-019 dependency in [section 16](#16-preflight-and-mission-start-authorization).
 
 ### Actual topology
 
@@ -295,6 +295,8 @@ The locked Python environment includes ONNX Runtime for the production crab task
 
 `CrabDetectionModule` validates ONNX metadata for the expected three labels and fixed input/output tensors, warms the session, and applies preprocessing, confidence filtering, class-wise NMS, and normalized coordinate conversion. Its deterministic tests do not replace Pi timing or physical camera acceptance. The checkpoint and exported ONNX files are local model assets and are intentionally excluded from Git; deployment checks the configured SHA-256 before copying the artifact.
 
+The Pi installer loads each enabled module against the candidate YAML and initializes it using the staged, hash-checked model in the checkout. At service startup the runner checks the installed path and initializes again. Model warm-up during either initialization leaves the runtime processed-frame counter at zero. Keep the installed artifact, config hash, and target timing evidence together when reviewing a field run.
+
 Keep three validation questions separate:
 
 1. **Model validity:** does the path exist, does content match the pinned SHA-256, and can the selected runtime parse/load it? Existence/hash/runtime import are implemented in `ArtifactValidator`; load probing is optional and not wired in production.
@@ -348,8 +350,8 @@ Production preflight runs 20 checks: strict config; artifact hashes; tether; sur
 | Clock | makes cross-host timestamps defensible | `ChronyClockProbe`/`ClockMonitor` | required preflight failure; runtime later continues with latency invalid |
 | Camera identity/mode/run | prevents `/dev/videoN` drift, unsupported tuples, low FPS, and long gaps | `V4L2DeviceProbe`, SHM/health observations over at least ten seconds | required failure with per-camera measurements |
 | RTP/correlation | proves video and metadata refer to the same physical frames | `BrokerRuntimeEvidenceProvider` plus UDP observations | required per-stream failure |
-| Capacity/environment | prevents launch under unsafe memory/root/recording pressure | psutil/disk probes; CPU sample | required except thermal temperature/throttle observations |
-| Module/component readiness | proves each task processed frames and every required role reports `RUNNING` | brokered `cv.health.*`, control GET_STATUS, required-state inventory | required failure |
+| Capacity/environment | prevents launch under unsafe memory/root/recording pressure | psutil/disk probes on the Pi, including the local recording path when enabled; CPU sample | required except thermal temperature/throttle observations |
+| Module/component readiness | checks that each enabled task processed at least ten frames during the window and all required components are present without an `ERROR` state | brokered `cv.health.*`, control GET_STATUS, required-state inventory | PFL-019 and PFL-020 are both required |
 
 `rov-cv config validate` proves schema/cross-field consistency only. Adding `--probe-hardware` proves configured device identity and exact mode at that moment. Production preflight composes those with live multi-component/network/clock/performance evidence and creates a start-gate report. HIL acceptance is longer, scenario-specific, physical two-host evidence tied to revision/config; no preflight result substitutes for it.
 
@@ -363,7 +365,9 @@ Every production `START` is reauthorized against:
 
 The decision is written to `/run/purdue-rov-cv/mission-state.json`. Failure to persist an authorized decision disables it.
 
-Two limitations matter:
+**Cold-start blocker.** The runner reaches `READY` after initialization, registration and the first SHM frame. `ModuleRunnerService._worker()` only calls `process()` in `RUNNING` or `DEGRADED`. `BrokerRuntimeEvidenceProvider` measures the change in processed-frame counters during preflight, so a clean boot cannot satisfy PFL-019. `PreflightStartAuthorizer` requires PFL-019 to pass before forwarding START. Camera-hub and UVC checks can still run. Closing the blocker requires a production-path test that starts from a fresh `READY` runner, passes the pre-START gate, completes START and observes actual processing. Keep post-START frame evidence for the inference and soak checks.
+
+Other operational details:
 
 1. The recorder is required by PFL-020 only when `recording.enabled` is true. Disabled recording skips the recording filesystem reserve check; the independent root-space check remains.
 2. `MissionEnableGate.observe_runtime()` exists, but the router invokes authorization on each `START`; it does not continuously aggregate all components after enablement. Do not describe the mission-state file as an always-on safety interlock.
@@ -371,13 +375,15 @@ Two limitations matter:
 
 ## 17. Deployment and systemd supervision
 
-The reference platform is Ubuntu 24.04, Python 3.12, systemd, GStreamer 1.22+, Pi 5 ARM64 onboard, and x86-64/ARM64 surface. Installation creates user `purdue-cv`, `/opt/purdue-rov-cv`, `/etc/purdue-rov-cv`, `/run/purdue-rov-cv`, and `/var/lib/purdue-rov-cv`; installs an isolated venv with system GI/GStreamer packages; validates the environment; installs a chrony drop-in; reconciles camera/module/receiver instances; reloads and enables but does not start the role target.
+The reference platform is Ubuntu 24.04, Python 3.12, systemd, GStreamer 1.22+, Pi 5 ARM64 onboard, and x86-64/ARM64 surface. Run `sudo bash scripts/install_deployment.sh pi|surface <mission.yaml>` from the checkout, choosing the role for each host. The installer creates the service account and runtime paths and installs the package non-editably in the deployment venv with access to system GI/GStreamer. It validates the candidate, snapshots project deployment files, installs the mission and role topology, renders chrony with the deployed interpreter, and reloads systemd. The environment validator must pass before target enablement. Start the target separately.
+
+The exit handler attempts to restore the mission, chrony drop-in, model directory and project systemd files and links from the snapshot. The snapshot is for deployment files. Python dependencies, installed tools and revision metadata are written separately. The restore copies files and modes but does not explicitly preserve ownership, and the rollback reloads systemd without restarting chrony. Verify restored ownership and chrony state before restarting services after a failed install.
 
 All service units use `Restart=on-failure`, two-second retry, five-second stop timeout, SIGTERM, exit 78 restart prevention, and a five-starts-per-60-seconds limit. Runtime directory preservation prevents one service from removing shared `/run` state.
 
 Deployment order is surface first, then Pi. Stop Pi first, then surface. `active (running)` is not application readiness; use health, task status, preflight, and mission-state evidence.
 
-The production boot path is `multi-user.target` → enabled role target → network-online/chrony and role services. The surface target starts health and dynamically wants a recorder only when recording is enabled, along with one `purdue-cv-video-receiver@<camera>` for each surface-streamed camera. The onboard target starts broker/router/health and dynamically wants every camera and enabled module instance; generated module drop-ins add `After=`/`Requires=` for that task's camera. Operators then run production preflight and issue `START`; systemd never enables mission processing itself. A unit stopped by the start limit remains failed until the root cause is fixed and `systemctl reset-failed` is run.
+The production boot path is `multi-user.target` → enabled role target → network-online/chrony and role services. The surface target starts health and dynamically wants a recorder only when recording is enabled, along with one `purdue-cv-video-receiver@<camera>` for each surface-streamed camera. The onboard target starts broker/router/health and dynamically wants every camera and enabled module instance. Generated module drop-ins add `After=` and `Requires=` for that task's camera. Inference begins after an authorized operator START, subject to the cold-start blocker above. A unit stopped by the start limit remains failed until the root cause is fixed and `systemctl reset-failed` is run.
 
 The recorder entrypoint refuses direct startup when recording is disabled, before publishing a session file or creating a session. The target file itself has no static recorder dependency; generated instance links follow the validated recording setting.
 
@@ -402,6 +408,8 @@ Choose the lowest layer that reproduces the defect, then add a process or physic
 Physical UVC tests are opt-in through `PURDUE_ROV_CV_HARDWARE_CONFIG` and `PURDUE_ROV_CV_HARDWARE_CAMERA`; manual disconnect additionally requires `PURDUE_ROV_CV_HARDWARE_DISCONNECT=1`. They cover stable identity/mode open, camera SHM service behavior, RTP/FrameIndex correlation, degraded shutdown, and disconnect/reconnect continuity.
 
 Phase 11 HIL tooling provides camera-hub (normative 1,800 s), per-host stability (at least 3,600 s), two-host overlap merge (at least 3,600 s), and destructive clock-loss tests. It does not provide dedicated automated HIL subcommands for every acceptance row, such as two subscriber processes, module kill/video continuity, control, recording readback, or corrupt-model restoration. Those rows need carefully captured manual evidence or new harnesses.
+
+For a return to the bench, verify camera identity and mode with services stopped. Bring up the surface and then the Pi. Capture task status, a short camera-hub artifact and the canonical preflight report before attempting fault cases. The camera-hub run observes SHM and surface RTP/correlation without a running task. Save separate captures for reconnect, clock loss and recording readback. Run the concurrent stability test after production START works and the configured task processes frames. Preserve the revision, installed config hash, evidence files and journals for both hosts. Use the [Phase 11 commands](phase11-deployment.md#hil-commands-and-artifacts) for normative runs.
 
 The authoritative matrix is currently entirely `UNVERIFIED`; CI success does not change it. A smoke artifact intentionally remains `UNVERIFIED`.
 

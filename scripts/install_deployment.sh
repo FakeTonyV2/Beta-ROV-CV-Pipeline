@@ -20,10 +20,10 @@ transaction_dir=""
 deployment_committed=0
 rollback_on_exit() {
     status=$?
-    if [[ -n "${transaction_dir}" && "${deployment_committed}" -ne 1 && -f "${transaction_dir}/manifest.json" ]]; then
+    if [[ -n "${transaction_dir}" && "${deployment_committed}" -ne 1 && -f "${transaction_dir}/snapshot/manifest.json" ]]; then
         set +e
         /opt/purdue-rov-cv/.venv/bin/python scripts/deployment_state.py restore \
-            --snapshot "${transaction_dir}" \
+            --snapshot "${transaction_dir}/snapshot" \
             --config /etc/purdue-rov-cv/mission.yaml \
             --chrony /etc/chrony/conf.d/purdue-rov-cv.conf \
             --systemd /etc/systemd/system \
@@ -53,7 +53,7 @@ python3.12 -m venv --system-site-packages /opt/purdue-rov-cv/.venv
     --config "${config_source}" --model-directory models --role "${role}"
 transaction_dir="$(mktemp -d /var/tmp/purdue-cv-install.XXXXXX)"
 /opt/purdue-rov-cv/.venv/bin/python scripts/deployment_state.py capture \
-    --snapshot "${transaction_dir}" \
+    --snapshot "${transaction_dir}/snapshot" \
     --config /etc/purdue-rov-cv/mission.yaml \
     --chrony /etc/chrony/conf.d/purdue-rov-cv.conf \
     --systemd /etc/systemd/system \
@@ -79,7 +79,7 @@ if [[ "${role}" == "pi" ]]; then
     /opt/purdue-rov-cv/.venv/bin/python scripts/install_model_artifacts.py \
         --config /etc/purdue-rov-cv/mission.yaml --model-directory models
 fi
-./scripts/install_chrony.sh "${role}"
+bash scripts/install_chrony.sh "${role}"
 systemctl daemon-reload
 target="purdue-cv-surface.target"
 if [[ "${role}" == "pi" ]]; then
@@ -95,4 +95,4 @@ fi
 systemctl enable "${target}"
 systemctl disable "${other_target}" >/dev/null 2>&1 || true
 deployment_committed=1
-echo "deployment installed; start explicitly with: sudo ./scripts/start_deployment.sh ${role}"
+echo "deployment installed; start explicitly with: sudo bash scripts/start_deployment.sh ${role}"

@@ -14,7 +14,8 @@ role="$1"
 config_source="${2:-/etc/purdue-rov-cv/mission.yaml}"
 temporary="$(mktemp)"
 trap 'rm -f "${temporary}"' EXIT
-python3.12 scripts/configure_chrony.py --config "${config_source}" --role "${role}" --output "${temporary}"
+/opt/purdue-rov-cv/.venv/bin/python scripts/configure_chrony.py \
+    --config "${config_source}" --role "${role}" --output "${temporary}"
 target="/etc/chrony/conf.d/purdue-rov-cv.conf"
 install -d -m 0755 /etc/chrony/conf.d
 install -m 0644 "${temporary}" "${target}"

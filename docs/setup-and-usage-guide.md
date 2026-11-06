@@ -74,7 +74,6 @@ Verify the result:
 ```bash
 .venv/bin/python scripts/smoke_imports.py
 .venv/bin/python scripts/verify_dependencies.py
-.venv/bin/python -m pip check
 .venv/bin/rov-cv --help
 ```
 

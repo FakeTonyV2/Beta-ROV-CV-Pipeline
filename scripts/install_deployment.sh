@@ -48,7 +48,7 @@ install -d -o purdue-cv -g purdue-cv -m 0750 /var/lib/purdue-rov-cv /var/lib/pur
 python3.12 -m venv --system-site-packages /opt/purdue-rov-cv/.venv
 /opt/purdue-rov-cv/.venv/bin/python -m pip install --requirement requirements.lock
 /opt/purdue-rov-cv/.venv/bin/python -m pip install --no-deps .
-/opt/purdue-rov-cv/.venv/bin/python -m pip check
+/opt/purdue-rov-cv/.venv/bin/python scripts/check_locked_dependencies.py requirements.lock
 /opt/purdue-rov-cv/.venv/bin/python scripts/validate_deployment_candidate.py \
     --config "${config_source}" --model-directory models --role "${role}"
 transaction_dir="$(mktemp -d /var/tmp/purdue-cv-install.XXXXXX)"

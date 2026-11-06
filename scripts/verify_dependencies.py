@@ -4,15 +4,21 @@ import shutil
 import subprocess
 import sys
 from importlib import import_module
+from pathlib import Path
+
+from check_locked_dependencies import check_locked_dependencies
 
 
 def main() -> int:
     if sys.version_info[:2] != (3, 12):
         print(f"error: Python 3.12.x required, found {sys.version}", file=sys.stderr)
         return 1
-    result = subprocess.run([sys.executable, "-m", "pip", "check"], check=False)
-    if result.returncode:
-        return result.returncode
+    lock_path = Path(__file__).resolve().parents[1] / "requirements.lock"
+    dependency_errors = check_locked_dependencies(lock_path)
+    if dependency_errors:
+        for error in dependency_errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
     gst = shutil.which("gst-launch-1.0")
     if gst is None:
         print("error: gst-launch-1.0 not found", file=sys.stderr)
